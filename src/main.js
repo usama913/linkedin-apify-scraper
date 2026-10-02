@@ -1,5 +1,5 @@
-import { Actor, RequestQueue } from 'apify';
-import { DEFAULT_USER_AGENT, PuppeteerCrawler, puppeteerUtils } from 'crawlee';
+import { Actor } from 'apify';
+import { DEFAULT_USER_AGENT, PuppeteerCrawler, RequestQueue } from 'crawlee';
 import { LinkedinPageScrapper } from './linkedinPageScrapper.js';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import puppeteer from 'puppeteer-extra';
@@ -14,7 +14,8 @@ const input = await Actor.getInput() ?? {};
 
 const startUrls = (input.startUrls ?? [])
     .map((item) => typeof item === 'string' ? item : item?.url)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((url) => url.trim());
 
 if (startUrls.length === 0) {
     throw new Error('At least one LinkedIn profile URL is required.');
@@ -27,195 +28,721 @@ const maxProfiles = Math.min(
 
 const urls = [...new Set(startUrls)].slice(0, maxProfiles);
 
-const disableImagesStylesFonts = input.disableImagesStylesFonts !== false;
-let isProxyUsed = false;
+const disableImagesStylesFonts =
+    input.disableImagesStylesFonts !== false;
 
-const convertUrl = (url) => {
-    // Keep normal LinkedIn profile URLs unchanged. The scraper can also handle
-    // LinkedIn organization-guest URLs where applicable.
-    return url.trim();
-};
+const useProxyOnlyAfterFail =
+    input.useProxyOnlyAfterFail === true;
 
-const profileUrls = urls.map(convertUrl);
+const proxyInput = input.proxy ?? {};
 
-const initialProxyConfig = input.useProxyOnlyAfterFail
-    ? await Actor.createProxyConfiguration({ useApifyProxy: false })
-    : await Actor.createProxyConfiguration(input.proxy);
+const useApifyProxy =
+    proxyInput.useApifyProxy === true;
 
-const requestQueue = await RequestQueue.open();
+const customProxyUrls =
+    Array.isArray(proxyInput.proxyUrls)
+        ? proxyInput.proxyUrls.filter(Boolean)
+        : [];
 
-for (const [index, url] of profileUrls.entries()) {
-    await requestQueue.addRequest({
-        url,
-        uniqueKey: `profile-${index}-${url}`,
-        userData: { profileIndex: index },
+const hasConfiguredProxy =
+    useApifyProxy || customProxyUrls.length > 0;
+
+if (useProxyOnlyAfterFail && !hasConfiguredProxy) {
+    throw new Error(
+        'useProxyOnlyAfterFail is enabled, but no proxy is configured. ' +
+        'Set proxy.useApifyProxy=true or provide proxy.proxyUrls.'
+    );
+}
+
+const maxConcurrency = Math.max(
+    1,
+    Number(input.maxConcurrency ?? 1)
+);
+
+const maxRequestRetries = Math.max(
+    0,
+    Number(input.maxRequestRetries ?? 2)
+);
+
+const maxProxiedRetries = Math.max(
+    0,
+    Number(input.maxProxiedRetries ?? 5)
+);
+
+const requestHandlerTimeoutSecs = Math.max(
+    30,
+    Number(input.requestHandlerTimeoutSecs ?? 300)
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| Result tracking
+|--------------------------------------------------------------------------
+*/
+
+const failedDirectUrls = new Map();
+
+const successfulUrls = new Set();
+
+const failedUrls = new Set();
+
+
+/*
+|--------------------------------------------------------------------------
+| Build Request Queue
+|--------------------------------------------------------------------------
+*/
+
+async function createQueue(urlsToAdd, queueName) {
+
+    const queue = await RequestQueue.open(queueName);
+
+    for (const [index, url] of urlsToAdd.entries()) {
+
+        await queue.addRequest({
+            url,
+
+            uniqueKey: `${queueName}-${index}-${url}`,
+
+            userData: {
+                profileIndex: index,
+            },
+        });
+    }
+
+    return queue;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Create Proxy Configuration
+|--------------------------------------------------------------------------
+*/
+
+let proxyConfiguration = null;
+
+if (hasConfiguredProxy) {
+
+    proxyConfiguration =
+        await Actor.createProxyConfiguration({
+            useApifyProxy,
+
+            proxyUrls: customProxyUrls,
+        });
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Common page setup
+|--------------------------------------------------------------------------
+*/
+
+async function setupPage({ page }) {
+
+    await page.setUserAgent(DEFAULT_USER_AGENT);
+
+    if (!disableImagesStylesFonts) {
+        return;
+    }
+
+    await page.setRequestInterception(true);
+
+    page.on('request', async (request) => {
+
+        const blockedTypes = [
+            'stylesheet',
+            'font',
+            'image',
+            'media',
+        ];
+
+        try {
+
+            if (blockedTypes.includes(request.resourceType())) {
+
+                await request.abort();
+
+            } else {
+
+                await request.continue();
+
+            }
+
+        } catch {
+            // Request may already have been handled.
+        }
     });
 }
 
-const crawler = new PuppeteerCrawler({
-    requestQueue,
-    launchContext: {
-        launcher: puppeteer,
-        launchOptions: {
-            headless: true,
+
+/*
+|--------------------------------------------------------------------------
+| Scrape one profile
+|--------------------------------------------------------------------------
+*/
+
+async function scrapeProfile({
+    page,
+    request,
+    log,
+    pushData,
+    injectJQuery,
+    isProxyUsed,
+}) {
+
+    log.info(
+        `Scraping LinkedIn profile: ${request.url} | proxy=${isProxyUsed}`
+    );
+
+    /*
+     * Detect Authwall BEFORE scraper processing.
+     */
+
+    const currentUrl = page.url();
+
+    if (currentUrl.includes(AUTH_WALL)) {
+
+        throw new Error(
+            'Blocked by LinkedIn Authwall.'
+        );
+    }
+
+
+    /*
+     * Give LinkedIn a moment to finish redirects.
+     */
+
+    try {
+
+        await page.waitForNavigation({
+            timeout: 2000,
+            waitUntil: 'domcontentloaded',
+        });
+
+    } catch {
+        // Page may already be loaded.
+    }
+
+
+    /*
+     * Check again after navigation.
+     */
+
+    const finalUrl = page.url();
+
+    if (finalUrl.includes(AUTH_WALL)) {
+
+        throw new Error(
+            'Blocked by LinkedIn Authwall.'
+        );
+    }
+
+
+    /*
+     * Inject jQuery used by the existing scraper.
+     */
+
+    await injectJQuery();
+
+
+    /*
+     * Existing scraper.
+     */
+
+    const scraper = new LinkedinPageScrapper(
+        page,
+        log,
+        request,
+        input,
+        pushData,
+        isProxyUsed,
+    );
+
+
+    const result = await scraper.process();
+
+
+    if (!result) {
+
+        throw new Error(
+            'No data was extracted from the profile.'
+        );
+    }
+
+
+    const results =
+        Array.isArray(result)
+            ? result
+            : [result];
+
+
+    /*
+     * Only push actual successful results.
+     */
+
+    let pushed = 0;
+
+    for (const item of results) {
+
+        if (!item) {
+            continue;
+        }
+
+        await pushData(item);
+
+        pushed++;
+    }
+
+
+    if (pushed === 0) {
+
+        throw new Error(
+            'Scraper returned no valid output.'
+        );
+    }
+
+
+    return pushed;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Direct crawler
+|--------------------------------------------------------------------------
+*/
+
+async function runDirectCrawler() {
+
+    const directQueue = await createQueue(
+        urls,
+        `linkedin-direct-${Date.now()}`
+    );
+
+
+    const crawler = new PuppeteerCrawler({
+
+        requestQueue: directQueue,
+
+        launchContext: {
+
+            launcher: puppeteer,
+
+            launchOptions: {
+                headless: true,
+            },
         },
-    },
-    maxConcurrency: Number(input.maxConcurrency ?? 1),
-    maxRequestRetries: Number(input.maxRequestRetries ?? 2),
-    proxyConfiguration: initialProxyConfig,
-    requestHandlerTimeoutSecs: Number(input.requestHandlerTimeoutSecs ?? 300),
-    preNavigationHooks: [
-        async ({ page }) => {
-            await page.setUserAgent(DEFAULT_USER_AGENT);
 
-            if (disableImagesStylesFonts) {
-                await page.setRequestInterception(true);
+        maxConcurrency,
 
-                page.on('request', async (req) => {
-                    const blocked = ['stylesheet', 'font', 'image', 'media'].includes(req.resourceType());
+        maxRequestRetries,
 
-                    try {
-                        if (blocked) {
-                            await req.abort();
-                        } else {
-                            await req.continue();
-                        }
-                    } catch {
-                        // Request may already have been handled by the browser.
-                    }
+        requestHandlerTimeoutSecs,
+
+        preNavigationHooks: [
+            setupPage,
+        ],
+
+
+        async requestHandler({
+            page,
+            request,
+            log,
+            pushData,
+            injectJQuery,
+        }) {
+
+            try {
+
+                await scrapeProfile({
+                    page,
+                    request,
+                    log,
+                    pushData,
+                    injectJQuery,
+                    isProxyUsed: false,
                 });
+
+
+                successfulUrls.add(request.url);
+
+
+                /*
+                 * Charge ONLY after successful scraping.
+                 */
+
+                await Actor.charge({
+                    eventName: 'profile-scraped',
+                    count: 1,
+                });
+
+
+                log.info(
+                    `Successfully scraped profile: ${request.url}`
+                );
+
+            } catch (error) {
+
+                /*
+                 * Store the failure.
+                 *
+                 * We don't immediately push a failed result because
+                 * Crawlee may retry this request.
+                 */
+
+                failedDirectUrls.set(
+                    request.url,
+                    error?.message ?? String(error)
+                );
+
+
+                log.warning(
+                    `Direct scraping failed: ${request.url} | ` +
+                    `${error?.message ?? error}`
+                );
+
+
+                throw error;
             }
         },
-    ],
-    async requestHandler({ pushData, request, page, log, injectJQuery }) {
-        log.info(`Scraping LinkedIn profile: ${request.url}`);
 
-        const process = async () => {
-            const url = page.url();
 
-            if (url.includes(AUTH_WALL)) {
-                throw new Error('Blocked by LinkedIn Authwall.');
-            }
+        async failedRequestHandler({
+            request,
+            log,
+        }) {
 
-            await injectJQuery();
-
-            const scraper = new LinkedinPageScrapper(
-                page,
-                log,
-                request,
-                input,
-                pushData,
-                isProxyUsed,
+            failedDirectUrls.set(
+                request.url,
+                failedDirectUrls.get(request.url)
+                    ?? 'Page unreachable.'
             );
 
-            return scraper.process();
-        };
 
-        try {
-            // Crawlee normally waits for navigation. This is only a short
-            // compatibility wait for LinkedIn's redirects.
+            log.warning(
+                `Direct scraping permanently failed: ${request.url}`
+            );
+        },
+    });
+
+
+    await crawler.run();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Proxy crawler
+|--------------------------------------------------------------------------
+*/
+
+async function runProxyCrawler(urlsToRetry) {
+
+    if (
+        urlsToRetry.length === 0 ||
+        !hasConfiguredProxy
+    ) {
+        return;
+    }
+
+
+    console.log(
+        `Starting proxy retry phase for ${urlsToRetry.length} profile(s).`
+    );
+
+
+    const proxyQueue = await createQueue(
+        urlsToRetry,
+        `linkedin-proxy-${Date.now()}`
+    );
+
+
+    const crawler = new PuppeteerCrawler({
+
+        requestQueue: proxyQueue,
+
+        /*
+         * IMPORTANT:
+         *
+         * Proxy is configured on the crawler itself.
+         * We don't dynamically modify proxyConfiguration from
+         * failedRequestHandler.
+         */
+
+        proxyConfiguration,
+
+        launchContext: {
+
+            launcher: puppeteer,
+
+            launchOptions: {
+                headless: true,
+            },
+        },
+
+        maxConcurrency,
+
+        maxRequestRetries: maxProxiedRetries,
+
+        requestHandlerTimeoutSecs,
+
+        preNavigationHooks: [
+            setupPage,
+        ],
+
+
+        async requestHandler({
+            page,
+            request,
+            log,
+            pushData,
+            injectJQuery,
+        }) {
+
             try {
-                await page.waitForNavigation({ timeout: 1000, waitUntil: 'domcontentloaded' });
-            } catch {
-                // The page may already be loaded.
+
+                await scrapeProfile({
+                    page,
+                    request,
+                    log,
+                    pushData,
+                    injectJQuery,
+                    isProxyUsed: true,
+                });
+
+
+                successfulUrls.add(request.url);
+
+
+                /*
+                 * Charge only successful profile.
+                 */
+
+                await Actor.charge({
+                    eventName: 'profile-scraped',
+                    count: 1,
+                });
+
+
+                log.info(
+                    `Successfully scraped profile using proxy: ${request.url}`
+                );
+
+            } catch (error) {
+
+                log.warning(
+                    `Proxy scraping failed: ${request.url} | ` +
+                    `${error?.message ?? error}`
+                );
+
+                throw error;
             }
+        },
 
-            const result = await process();
 
-            if (!result) {
-                throw new Error('No data was extracted from the profile.');
-            }
+        async failedRequestHandler({
+            request,
+            log,
+            pushData,
+            page,
+        }) {
 
-            const results = Array.isArray(result) ? result : [result];
-
-            // Persist all scraped data before charging. One successful profile
-            // is one billable event, regardless of how many posts it contains.
-            for (const item of results) {
-                if (item) {
-                    await pushData(item);
-                }
-            }
-
-            // Charge only after the profile result has been made available.
-            // Configure "profile-scraped" in Apify Console at $0.10/event.
-            const chargeResult = await Actor.charge({
-                eventName: 'profile-scraped',
-                count: 1,
-            });
-
-            if (chargeResult?.chargedCount === 0) {
-                log.warning(`Profile ${request.url} was scraped but was not charged because the run charge limit was reached.`);
+            if (successfulUrls.has(request.url)) {
                 return;
             }
 
-            log.info(`Successfully scraped and billed profile: ${request.url}`);
-        } catch (error) {
-            log.error(`Failed to scrape ${request.url}: ${error?.message ?? error}`);
 
-            const errorItem = {
-                url: request.url,
-                status: 'failed',
-                note: error?.message ?? String(error),
-                isProxyUsed,
-            };
+            let note =
+                'Page unreachable through configured proxy.';
 
-            // Failed profiles are intentionally not charged.
-            await pushData(errorItem);
 
-            throw error;
-        }
-    },
-    async failedRequestHandler({ request, log, pushData, page }) {
-        log.error(`Request ${request.url} failed after all retries.`);
+            /*
+             * Detect Authwall.
+             */
 
-        let note = 'Page unreachable.';
+            try {
 
-        try {
-            const url = page?.url?.() ?? '';
-            if (url.includes(AUTH_WALL)) {
-                note = 'Blocked by LinkedIn Authwall.';
-            } else {
-                await puppeteerUtils.saveSnapshot(page, {
-                    key: `failed-${Date.now()}`,
-                    saveHtml: true,
-                    saveScreenshot: false,
+                const currentUrl =
+                    page?.url?.() ?? '';
+
+                if (currentUrl.includes(AUTH_WALL)) {
+
+                    note =
+                        'Blocked by LinkedIn Authwall.';
+                }
+
+            } catch {
+                // Ignore page inspection errors.
+            }
+
+
+            /*
+             * Save ONE final failure.
+             */
+
+            if (!failedUrls.has(request.url)) {
+
+                failedUrls.add(request.url);
+
+
+                await pushData({
+
+                    url: request.url,
+
+                    status: 'failed',
+
+                    note,
+
+                    isProxyUsed: true,
                 });
             }
-        } catch {
-            // Snapshot is best-effort.
-        }
 
-        // If configured, retry the failed URL using the supplied Apify proxy.
-        if (
-            input.useProxyOnlyAfterFail &&
-            !isProxyUsed &&
-            input.proxy?.useApifyProxy
+
+            log.error(
+                `Request failed after proxy retries: ${request.url}`
+            );
+        },
+    });
+
+
+    await crawler.run();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| MAIN
+|--------------------------------------------------------------------------
+*/
+
+try {
+
+    /*
+     * STEP 1
+     *
+     * Try all profiles directly.
+     */
+
+    console.log(
+        `Starting direct scraping for ${urls.length} profile(s).`
+    );
+
+
+    await runDirectCrawler();
+
+
+    /*
+     * STEP 2
+     *
+     * Retry only profiles that failed direct scraping.
+     */
+
+    if (
+        useProxyOnlyAfterFail &&
+        hasConfiguredProxy &&
+        failedDirectUrls.size > 0
+    ) {
+
+        const retryUrls = [
+            ...failedDirectUrls.keys()
+        ].filter(
+            url => !successfulUrls.has(url)
+        );
+
+
+        console.log(
+            `Direct scraping failed for ${retryUrls.length} profile(s). ` +
+            `Starting proxy retry phase.`
+        );
+
+
+        await runProxyCrawler(
+            retryUrls
+        );
+    }
+
+
+    /*
+     * STEP 3
+     *
+     * If proxy mode isn't enabled, write the direct failures.
+     */
+
+    if (
+        !useProxyOnlyAfterFail &&
+        failedDirectUrls.size > 0
+    ) {
+
+        const directFailures = [
+            ...failedDirectUrls.entries()
+        ];
+
+
+        for (
+            const [url, error] of directFailures
         ) {
-            isProxyUsed = true;
-            crawler.proxyConfiguration = await Actor.createProxyConfiguration(input.proxy);
-            crawler.maxRequestRetries = Number(input.maxProxiedRetries ?? 5);
 
-            await requestQueue.addRequest({
-                url: request.url,
-                uniqueKey: `${request.uniqueKey}-proxied`,
-                userData: { ...(request.userData ?? {}), proxiedRetry: true },
-                forefront: true,
+            if (successfulUrls.has(url)) {
+                continue;
+            }
+
+
+            if (failedUrls.has(url)) {
+                continue;
+            }
+
+
+            failedUrls.add(url);
+
+
+            await Actor.pushData({
+
+                url,
+
+                status: 'failed',
+
+                note: error || 'Page unreachable.',
+
+                isProxyUsed: false,
             });
-
-            log.warning(`Retrying ${request.url} using proxy.`);
-            return;
         }
+    }
 
-        // Failed profiles are not billable.
-        await pushData({
-            url: request.url,
-            status: 'failed',
-            note,
-            isProxyUsed,
-        });
-    },
-});
 
-await crawler.run();
+    /*
+     * Summary
+     */
 
-await Actor.exit();
+    console.log('----------------------------------');
+
+    console.log(
+        `Profiles requested: ${urls.length}`
+    );
+
+    console.log(
+        `Profiles successful: ${successfulUrls.size}`
+    );
+
+    console.log(
+        `Profiles failed: ${failedUrls.size}`
+    );
+
+    console.log('----------------------------------');
+
+
+} catch (error) {
+
+    console.error(
+        'Actor execution failed:',
+        error
+    );
+
+    throw error;
+
+} finally {
+
+    await Actor.exit();
+}
