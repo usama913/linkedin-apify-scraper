@@ -1,0 +1,17 @@
+{
+  "actorSpecification": 1,
+  "name": "linkedin-public-profile-scraper",
+  "title": "LinkedIn Public Profile Scraper",
+  "description": "Extract structured information from publicly accessible LinkedIn profiles, with optional public post extraction.",
+  "version": "1.0",
+  "buildTag": "latest",
+  "meta": {
+    "templateId": "js-crawlee-puppeteer-chrome"
+  },
+  "input": "./input_schema.json",
+  "dockerfile": "./Dockerfile",
+  "output": "./output_schema.json",
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  }
+}

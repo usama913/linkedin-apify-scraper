@@ -1,0 +1,13 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "LinkedIn Public Profile Scraper output",
+  "description": "Scraped LinkedIn profile and optional post results stored in the default dataset.",
+  "properties": {
+    "results": {
+      "type": "string",
+      "title": "Scraped results",
+      "description": "Profile and post records from the run.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    }
+  }
+}
