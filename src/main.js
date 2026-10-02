@@ -111,22 +111,27 @@ const finalFailedUrls = new Set();
 | Sanitizer
 |--------------------------------------------------------------------------
 |
-| Removes null / undefined / invalid values before sending data to
-| Apify Dataset.
+| Removes undefined values and normalizes invalid numbers to null before
+| sending data to Apify Dataset. Null values are kept so every output
+| item has a stable shape (e.g. "videoUrl": null).
 |
 */
 
 function sanitizeForDataset(value) {
 
-    if (value === null || value === undefined) {
+    if (value === undefined) {
         return undefined;
+    }
+
+    if (value === null) {
+        return null;
     }
 
     if (
         typeof value === 'number' &&
         !Number.isFinite(value)
     ) {
-        return undefined;
+        return null;
     }
 
     if (typeof value === 'string') {

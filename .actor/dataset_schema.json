@@ -15,92 +15,146 @@
         "description": "Result status."
       },
       "profileName": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Name",
         "description": "Public profile name."
       },
       "profileTitle": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Headline",
         "description": "Public profile headline."
       },
       "profileDescription": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "About",
         "description": "Public profile description."
       },
       "companyUrl": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Company URL",
         "description": "Company website shown on the public profile."
       },
       "companySize": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Company size",
         "description": "Company size shown on the profile."
       },
       "followersCount": {
-        "type": "number",
+        "type": [
+          "number",
+          "null"
+        ],
         "title": "Followers",
         "description": "Followers count when available."
       },
       "postId": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Post ID",
         "description": "LinkedIn post ID."
       },
       "postUrl": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Post URL",
         "description": "LinkedIn post URL."
       },
       "postDate": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Post date",
         "description": "Post publication date."
       },
       "postText": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Post text",
         "description": "Post text."
       },
       "postLikes": {
-        "type": "number",
+        "type": [
+          "number",
+          "null"
+        ],
         "title": "Likes",
         "description": "Post reaction count."
       },
       "postCommentsCount": {
-        "type": "number",
+        "type": [
+          "number",
+          "null"
+        ],
         "title": "Comments",
         "description": "Post comment count."
       },
       "imageUrl": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Image URL",
         "description": "Post image URL."
       },
       "videoUrl": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Video URL",
-        "description": "External video URL."
+        "description": "Post video URL (external or native) when available."
       },
       "isRepost": {
-        "type": "boolean",
+        "type": [
+          "boolean",
+          "null"
+        ],
         "title": "Is repost",
         "description": "Whether the post is a repost."
       },
       "repostInfo": {
-        "type": "object",
+        "type": [
+          "object",
+          "null"
+        ],
         "title": "Repost information",
         "description": "Information about the reposted profile."
       },
       "isProxyUsed": {
-        "type": "boolean",
+        "type": [
+          "boolean",
+          "null"
+        ],
         "title": "Proxy used",
         "description": "Whether a proxy was used."
       },
       "note": {
-        "type": "string",
+        "type": [
+          "string",
+          "null"
+        ],
         "title": "Note",
         "description": "Failure or informational note."
       }
@@ -112,17 +166,25 @@
       "title": "Profiles and posts",
       "transformation": {
         "fields": [
-          "status",
+          "url",
           "profileName",
           "profileTitle",
-          "url",
-          "followersCount",
+          "profileDescription",
           "companyUrl",
+          "companySize",
+          "followersCount",
+          "isProxyUsed",
+          "postId",
+          "postUrl",
           "postDate",
           "postText",
           "postLikes",
           "postCommentsCount",
-          "postUrl",
+          "imageUrl",
+          "videoUrl",
+          "isRepost",
+          "repostInfo",
+          "status",
           "note"
         ]
       },
@@ -146,6 +208,24 @@
           },
           "postCommentsCount": {
             "format": "number"
+          },
+          "companyUrl": {
+            "format": "link"
+          },
+          "imageUrl": {
+            "format": "image"
+          },
+          "videoUrl": {
+            "format": "link"
+          },
+          "isProxyUsed": {
+            "format": "boolean"
+          },
+          "isRepost": {
+            "format": "boolean"
+          },
+          "repostInfo": {
+            "format": "object"
           }
         }
       }

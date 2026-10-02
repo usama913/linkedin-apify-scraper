@@ -123,6 +123,37 @@ export class ArticleProvider {
                     return null;
                 }
 
+                const getNativeVideoUrl = (article) =>
+                {
+                    const video = article.querySelector("video");
+                    if(!video)
+                    {
+                        return null;
+                    }
+
+                    const sourcesString = video.getAttribute("data-sources");
+                    if(sourcesString)
+                    {
+                        try
+                        {
+                            const sources = JSON.parse(sourcesString);
+                            const source = sources.find(s => s.src && s.type === "video/mp4") || sources.find(s => s.src);
+                            if(source)
+                            {
+                                return source.src;
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore malformed data-sources.
+                        }
+                    }
+
+                    const sourceElement = video.querySelector("source[src]");
+                    const src = video.getAttribute("src") || (sourceElement && sourceElement.getAttribute("src"));
+                    return src && !src.startsWith("blob:") ? src : null;
+                }
+
                 const getRepostInfo = (article) => 
                 {
                     const repostInfoElement = $(article).find(".mx-main-feed-card-no-gutter");
@@ -182,10 +213,12 @@ export class ArticleProvider {
                         }                        
                     }
     
-                    const videoUrl = await getExternalVideoUrl(article);
+                    const externalVideoUrl = await getExternalVideoUrl(article);
+                    const videoUrl = externalVideoUrl || getNativeVideoUrl(article);
                     let imageUrl = null;
-                    if(!videoUrl) 
+                    if(!externalVideoUrl)
                     {
+                        // For native videos this is the poster image.
                         imageUrl = await getImageUrl(article, postId);
                     }
 
