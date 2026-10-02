@@ -1,185 +1,62 @@
 {
-  "actorSpecification": 1,
-  "fields": {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "type": "object",
-    "properties": {
-      "url": {
-        "type": "string",
-        "title": "Profile URL",
-        "description": "LinkedIn profile URL."
-      },
-      "status": {
-        "type": "string",
-        "title": "Status",
-        "description": "Result status."
-      },
-      "profileName": {
-        "type": "string",
-        "title": "Name",
-        "description": "Public profile name."
-      },
-      "profileTitle": {
-        "type": "string",
-        "title": "Headline",
-        "description": "Public profile headline."
-      },
-      "profileDescription": {
-        "type": "string",
-        "title": "About",
-        "description": "Public profile description."
-      },
-      "companyUrl": {
-        "type": "string",
-        "title": "Company URL",
-        "description": "Company website shown on the public profile."
-      },
-      "companySize": {
-        "type": "string",
-        "title": "Company size",
-        "description": "Company size shown on the profile."
-      },
-      "followersCount": {
-        "type": "number",
-        "title": "Followers",
-        "description": "Followers count when available."
-      },
-      "postId": {
-        "type": "string",
-        "title": "Post ID",
-        "description": "LinkedIn post ID."
-      },
-      "postUrl": {
-        "type": "string",
-        "title": "Post URL",
-        "description": "LinkedIn post URL."
-      },
-      "postDate": {
-        "type": "string",
-        "title": "Post date",
-        "description": "Post publication date."
-      },
-      "postText": {
-        "type": "string",
-        "title": "Post text",
-        "description": "Post text."
-      },
-      "postLikes": {
-        "type": "number",
-        "title": "Likes",
-        "description": "Post reaction count."
-      },
-      "postCommentsCount": {
-        "type": "number",
-        "title": "Comments",
-        "description": "Post comment count."
-      },
-      "imageUrl": {
-        "type": "string",
-        "title": "Image URL",
-        "description": "Post image URL."
-      },
-      "videoUrl": {
-        "type": "string",
-        "title": "Video URL",
-        "description": "External video URL."
-      },
-      "isRepost": {
-        "type": "boolean",
-        "title": "Is repost",
-        "description": "Whether the post is a repost."
-      },
-      "repostInfo": {
-        "type": "object",
-        "title": "Repost information",
-        "description": "Information about the reposted profile."
-      },
-      "isProxyUsed": {
-        "type": "boolean",
-        "title": "Proxy used",
-        "description": "Whether a proxy was used."
-      },
-      "note": {
-        "type": "string",
-        "title": "Note",
-        "description": "Failure or informational note."
-      }
-    },
-    "additionalProperties": true
-  },
-  "views": {
-    "overview": {
-      "title": "Profiles and posts",
-      "transformation": {
-        "fields": [
-          "status",
-          "profileName",
-          "profileTitle",
-          "url",
-          "followersCount",
-          "companyUrl",
-          "postDate",
-          "postText",
-          "postLikes",
-          "postCommentsCount",
-          "postUrl",
-          "note"
-        ]
-      },
-      "display": {
-        "component": "table",
-        "properties": {
-          "url": {
-            "format": "link"
-          },
-          "postUrl": {
-            "format": "link"
-          },
-          "postDate": {
-            "format": "date"
-          },
-          "followersCount": {
-            "format": "number"
-          },
-          "postLikes": {
-            "format": "number"
-          },
-          "postCommentsCount": {
-            "format": "number"
-          }
+    "actorSpecification": 1,
+    "fields": {
+        "profileUrl": {
+            "type": "string"
+        },
+        "profileType": {
+            "type": "string"
+        },
+        "profileName": {
+            "type": "string"
+        },
+        "profileTitle": {
+            "type": "string"
+        },
+        "profileDescription": {
+            "type": "string"
+        },
+        "companyUrl": {
+            "type": "string"
+        },
+        "companySize": {
+            "type": "string"
+        },
+        "followersCount": {
+            "type": "integer"
+        },
+        "isProxyUsed": {
+            "type": "boolean"
+        },
+        "postId": {
+            "type": "string"
+        },
+        "postUrl": {
+            "type": "string"
+        },
+        "postDate": {
+            "type": "string"
+        },
+        "postText": {
+            "type": "string"
+        },
+        "postLikes": {
+            "type": "integer"
+        },
+        "postCommentsCount": {
+            "type": "integer"
+        },
+        "imageUrl": {
+            "type": "string"
+        },
+        "videoUrl": {
+            "type": "string"
+        },
+        "isRepost": {
+            "type": "boolean"
+        },
+        "repostInfo": {
+            "type": "string"
         }
-      }
-    },
-    "profileDetails": {
-      "title": "Profile details",
-      "transformation": {
-        "fields": [
-          "status",
-          "profileName",
-          "profileTitle",
-          "profileDescription",
-          "companyUrl",
-          "companySize",
-          "followersCount",
-          "url",
-          "isProxyUsed",
-          "note"
-        ]
-      },
-      "display": {
-        "component": "table",
-        "properties": {
-          "url": {
-            "format": "link"
-          },
-          "companyUrl": {
-            "format": "link"
-          },
-          "followersCount": {
-            "format": "number"
-          }
-        }
-      }
     }
-  }
 }
