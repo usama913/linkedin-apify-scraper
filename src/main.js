@@ -1,64 +1,159 @@
 import { Actor } from 'apify';
-import { PuppeteerCrawler, RequestQueue } from 'crawlee';
-import puppeteerExtra from 'puppeteer-extra';
+import { DEFAULT_USER_AGENT, PuppeteerCrawler, RequestQueue } from 'crawlee';
+import { LinkedinPageScrapper } from './linkedinPageScrapper.js';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import puppeteer from 'puppeteer-extra';
 
-import { DEFAULT_USER_AGENT } from 'crawlee';
-import LinkedinPageScrapper from './linkedinPageScrapper.js';
+const AUTH_WALL = 'linkedin.com/authwall';
 
-puppeteerExtra.use(StealthPlugin());
+puppeteer.use(StealthPlugin());
 
 await Actor.init();
 
 const input = await Actor.getInput() ?? {};
 
-const {
-    startUrls = [],
-    maxProfiles = 10,
-    maxItems = 20,
+const startUrls = (input.startUrls ?? [])
+    .map((item) => typeof item === 'string' ? item : item?.url)
+    .filter(Boolean)
+    .map((url) => url.trim());
 
-    onlyProfileInfo = false,
-    includeProfileInfo = true,
+if (startUrls.length === 0) {
+    throw new Error('At least one LinkedIn URL is required.');
+}
 
-    // Recommended:
-    // Try direct first, then use proxy only if direct fails.
-    useProxyOnlyAfterFail = true,
+const maxProfiles = Math.min(
+    Math.max(Number(input.maxProfiles ?? startUrls.length), 1),
+    100
+);
 
-    proxy = {},
-    maxProxiedRetries = 2,
+const urls = [...new Set(startUrls)].slice(0, maxProfiles);
 
-    maxConcurrency = 2,
-    maxRequestRetries = 1,
-    requestHandlerTimeoutSecs = 180,
+const maxItems = Number(input.maxItems ?? 10);
 
-    disableImagesStylesFonts = true,
-} = input;
+const onlyProfileInfo = input.onlyProfileInfo === true;
+
+const includeProfileInfo = input.includeProfileInfo === true;
+
+const useProxyOnlyAfterFail =
+    input.useProxyOnlyAfterFail === true;
+
+const maxConcurrency = Math.max(
+    1,
+    Number(input.maxConcurrency ?? 1)
+);
+
+const maxRequestRetries = Math.max(
+    0,
+    Number(input.maxRequestRetries ?? 2)
+);
+
+const maxProxiedRetries = Math.max(
+    0,
+    Number(input.maxProxiedRetries ?? 5)
+);
+
+const requestHandlerTimeoutSecs = Math.max(
+    30,
+    Number(input.requestHandlerTimeoutSecs ?? 300)
+);
+
+const disableImagesStylesFonts =
+    input.disableImagesStylesFonts !== false;
 
 
-// ------------------------------------------------------------
-// Helpers
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Proxy configuration
+|--------------------------------------------------------------------------
+*/
+
+const proxyInput = input.proxy ?? {};
+
+const useApifyProxy =
+    proxyInput.useApifyProxy === true;
+
+const customProxyUrls =
+    Array.isArray(proxyInput.proxyUrls)
+        ? proxyInput.proxyUrls.filter(Boolean)
+        : [];
+
+const hasProxy =
+    useApifyProxy ||
+    customProxyUrls.length > 0;
+
+let proxyConfiguration = null;
+
+if (hasProxy) {
+
+    proxyConfiguration =
+        await Actor.createProxyConfiguration({
+            useApifyProxy,
+            proxyUrls: customProxyUrls,
+        });
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Tracking
+|--------------------------------------------------------------------------
+*/
+
+const successfulUrls = new Set();
+
+const directFailedUrls = new Map();
+
+const finalFailedUrls = new Set();
+
+
+/*
+|--------------------------------------------------------------------------
+| Sanitizer
+|--------------------------------------------------------------------------
+|
+| Removes null / undefined / invalid values before sending data to
+| Apify Dataset.
+|
+*/
 
 function sanitizeForDataset(value) {
+
     if (value === null || value === undefined) {
         return undefined;
     }
 
-    if (typeof value === 'number' && !Number.isFinite(value)) {
+    if (
+        typeof value === 'number' &&
+        !Number.isFinite(value)
+    ) {
         return undefined;
     }
 
+    if (typeof value === 'string') {
+
+        return value;
+    }
+
+    if (typeof value === 'boolean') {
+
+        return value;
+    }
+
     if (Array.isArray(value)) {
+
         return value
             .map(item => sanitizeForDataset(item))
             .filter(item => item !== undefined);
     }
 
     if (typeof value === 'object') {
+
         const result = {};
 
         for (const [key, item] of Object.entries(value)) {
-            const sanitized = sanitizeForDataset(item);
+
+            const sanitized =
+                sanitizeForDataset(item);
 
             if (sanitized !== undefined) {
                 result[key] = sanitized;
@@ -72,673 +167,767 @@ function sanitizeForDataset(value) {
 }
 
 
-function normalizeStartUrls(urls) {
-    if (!Array.isArray(urls)) {
-        return [];
-    }
+/*
+|--------------------------------------------------------------------------
+| Convert LinkedIn company/school URLs
+|--------------------------------------------------------------------------
+*/
 
-    return urls
-        .map(item => {
-            if (typeof item === 'string') {
-                return item;
-            }
+function convertUrl(url) {
 
-            if (item && typeof item.url === 'string') {
-                return item.url;
-            }
-
-            return null;
-        })
-        .filter(Boolean);
-}
-
-
-function convertLinkedInUrl(url) {
     if (!url) {
         return url;
     }
 
-    try {
-        const parsed = new URL(url);
-
-        if (!parsed.hostname.includes('linkedin.com')) {
-            return url;
-        }
-
-        const pathname = parsed.pathname;
-
-        if (
-            pathname.startsWith('/in/') ||
-            pathname.startsWith('/company/') ||
-            pathname.startsWith('/school/') ||
-            pathname.startsWith('/showcase/')
-        ) {
-            return `https://www.linkedin.com/organization-guest${pathname}`;
-        }
-
-        if (pathname.startsWith('/organization-guest/')) {
-            return url;
-        }
-
-        return url;
-    } catch {
+    if (url.includes('/organization-guest/')) {
         return url;
     }
-}
 
-
-// ------------------------------------------------------------
-// Input validation
-// ------------------------------------------------------------
-
-const urls = normalizeStartUrls(startUrls);
-
-if (urls.length === 0) {
-    throw new Error(
-        'No start URLs provided. Please provide at least one LinkedIn profile/company URL.'
+    return url.replace(
+        /(https:\/\/[^/]*linkedin\.com\/)(school|company|showcase)\//,
+        '$1organization-guest/$2/'
     );
 }
 
-const limitedUrls = urls.slice(0, Number(maxProfiles));
+
+/*
+|--------------------------------------------------------------------------
+| Create Request Queue
+|--------------------------------------------------------------------------
+*/
+
+async function createQueue(urlsToProcess, name) {
+
+    const queue = await RequestQueue.open(name);
+
+    for (let index = 0; index < urlsToProcess.length; index++) {
+
+        const url = convertUrl(urlsToProcess[index]);
+
+        await queue.addRequest({
+
+            url,
+
+            uniqueKey:
+                `${name}-${index}-${url}`,
+
+            userData: {
+                originalUrl: urlsToProcess[index],
+                profileIndex: index,
+            },
+        });
+    }
+
+    return queue;
+}
 
 
-// ------------------------------------------------------------
-// Proxy configuration
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Browser setup
+|--------------------------------------------------------------------------
+*/
 
-let proxyConfiguration = undefined;
+async function setupPage({ page }) {
 
-if (proxy?.useApifyProxy !== false) {
-    proxyConfiguration = await Actor.createProxyConfiguration({
-        useApifyProxy: true,
+    await page.setUserAgent(
+        DEFAULT_USER_AGENT
+    );
 
-        apifyProxyGroups: proxy?.apifyProxyGroups || [
-            'RESIDENTIAL',
-        ],
+    if (!disableImagesStylesFonts) {
+        return;
+    }
 
-        proxyUrls: proxy?.proxyUrls || undefined,
+    await page.setRequestInterception(true);
+
+    page.on('request', async (request) => {
+
+        try {
+
+            const resourceType =
+                request.resourceType();
+
+            if (
+                resourceType === 'stylesheet' ||
+                resourceType === 'font' ||
+                resourceType === 'image' ||
+                resourceType === 'media'
+            ) {
+
+                await request.abort();
+
+            } else {
+
+                await request.continue();
+
+            }
+
+        } catch {
+            // Request may already have been handled.
+        }
     });
 }
 
 
-// ------------------------------------------------------------
-// Request Queues
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Check Authwall
+|--------------------------------------------------------------------------
+*/
 
-const requestQueue = await RequestQueue.open();
+function isAuthWall(url) {
 
-const proxyQueue = await RequestQueue.open(
-    `linkedin-profile-proxy-${Date.now()}`
-);
-
-
-// ------------------------------------------------------------
-// Add initial direct requests
-// ------------------------------------------------------------
-
-for (const originalUrl of limitedUrls) {
-    const convertedUrl = convertLinkedInUrl(originalUrl);
-
-    await requestQueue.addRequest({
-        url: convertedUrl,
-
-        userData: {
-            originalUrl,
-            isProxyUsed: false,
-            isProxyFallback: false,
-            retryCount: 0,
-        },
-    });
+    return Boolean(
+        url &&
+        url.includes(AUTH_WALL)
+    );
 }
 
 
-// ------------------------------------------------------------
-// Statistics
-// ------------------------------------------------------------
-
-const successfulProfiles = new Set();
-
-let successfulCount = 0;
-let failedCount = 0;
-let proxySuccessCount = 0;
-let directSuccessCount = 0;
-
-
-// ------------------------------------------------------------
-// Scrape function
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Scrape a profile
+|--------------------------------------------------------------------------
+*/
 
 async function scrapeProfile({
     page,
     request,
     log,
+    injectJQuery,
     isProxyUsed,
 }) {
-    const scraper = new LinkedinPageScrapper({
-        page,
-        request,
-        log,
 
-        config: {
-            maxItems,
-            onlyProfileInfo,
-            includeProfileInfo,
-        },
+    log.info(
+        `Scraping LinkedIn profile: ${request.url} | proxy=${isProxyUsed}`
+    );
 
-        isProxyUsed,
-    });
 
-    const results = await scraper.process();
+    /*
+     * Wait for initial navigation.
+     */
 
-    if (!results || results.length === 0) {
+    try {
+
+        await page.waitForNavigation({
+            timeout: 2000,
+            waitUntil: 'domcontentloaded',
+        });
+
+    } catch {
+        // Page may already be loaded.
+    }
+
+
+    /*
+     * Check Authwall.
+     */
+
+    if (isAuthWall(page.url())) {
+
         throw new Error(
-            'No data was returned from LinkedIn profile.'
+            'Blocked by LinkedIn Authwall.'
         );
     }
 
-    const sanitizedResults = sanitizeForDataset(results);
 
-    if (!sanitizedResults || sanitizedResults.length === 0) {
+    /*
+     * Inject jQuery.
+     */
+
+    await injectJQuery();
+
+
+    /*
+     * Existing scraper.
+     *
+     * IMPORTANT:
+     * The scraper no longer pushes directly to Dataset.
+     * It returns an array of results.
+     */
+
+    const scraper =
+        new LinkedinPageScrapper(
+            page,
+            log,
+            request,
+            input,
+            isProxyUsed
+        );
+
+
+    const result =
+        await scraper.process();
+
+
+    if (!result) {
+
         throw new Error(
-            'Scraped data became empty after sanitization.'
+            'Scraper returned no result.'
         );
     }
 
-    // --------------------------------------------------------
-    // IMPORTANT:
-    // Dataset write happens BEFORE charging.
-    // --------------------------------------------------------
 
-    await Actor.pushData(sanitizedResults);
+    const results =
+        Array.isArray(result)
+            ? result
+            : [result];
+
+
+    /*
+     * Sanitize all records BEFORE pushing.
+     */
+
+    const sanitizedResults =
+        results
+            .map(item =>
+                sanitizeForDataset(item)
+            )
+            .filter(
+                item =>
+                    item !== undefined &&
+                    item !== null
+            );
+
+
+    if (sanitizedResults.length === 0) {
+
+        throw new Error(
+            'Scraper returned no valid dataset items.'
+        );
+    }
+
+
+    /*
+     * Push the COMPLETE batch at once.
+     *
+     * This prevents duplicate posts if one item fails
+     * after earlier items were already inserted.
+     */
+
+    await Actor.pushData(
+        sanitizedResults
+    );
+
 
     return sanitizedResults;
 }
 
 
-// ------------------------------------------------------------
-// Mark successful profile
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Direct crawler
+|--------------------------------------------------------------------------
+*/
 
-async function markProfileSuccessful({
-    originalUrl,
-    results,
-    isProxyUsed,
-    log,
-}) {
-    const profileKey = originalUrl.toLowerCase();
+async function runDirectCrawler() {
 
-    // --------------------------------------------------------
-    // Prevent duplicate charging.
-    // --------------------------------------------------------
-
-    if (successfulProfiles.has(profileKey)) {
-        log.info(
-            `Profile already processed successfully. Skipping duplicate charge: ${originalUrl}`
+    const queue =
+        await createQueue(
+            urls,
+            `linkedin-direct-${Date.now()}`
         );
 
-        return;
-    }
 
-    // --------------------------------------------------------
-    // IMPORTANT:
-    // Charge only after successful Dataset write.
-    // --------------------------------------------------------
+    const crawler =
+        new PuppeteerCrawler({
 
-    await Actor.charge({
-        eventName: 'profile-scraped',
-        count: 1,
-    });
+            requestQueue: queue,
 
-    successfulProfiles.add(profileKey);
+            launchContext: {
 
-    successfulCount++;
+                launcher: puppeteer,
 
-    if (isProxyUsed) {
-        proxySuccessCount++;
-    } else {
-        directSuccessCount++;
-    }
+                launchOptions: {
+                    headless: true,
+                },
+            },
 
-    log.info(
-        `Successfully scraped profile: ${originalUrl}`
-    );
+            maxConcurrency,
 
-    log.info(
-        `Items returned: ${results.length}`
-    );
+            maxRequestRetries,
 
-    log.info(
-        `Billing event recorded: profile-scraped ($0.005)`
-    );
-}
+            requestHandlerTimeoutSecs,
 
 
-// ------------------------------------------------------------
-// Store final failure
-// ------------------------------------------------------------
-
-async function storeFailure({
-    originalUrl,
-    error,
-    isProxyUsed,
-}) {
-    const profileKey = originalUrl.toLowerCase();
-
-    // --------------------------------------------------------
-    // Do not write a failure if the profile was already
-    // successfully processed by another crawler.
-    // --------------------------------------------------------
-
-    if (successfulProfiles.has(profileKey)) {
-        return;
-    }
-
-    await Actor.pushData(
-        sanitizeForDataset({
-            url: originalUrl,
-            status: 'failed',
-            note: error?.message || 'Unknown scraping error',
-            isProxyUsed: Boolean(isProxyUsed),
-        })
-    );
-}
+            preNavigationHooks: [
+                setupPage,
+            ],
 
 
-// ------------------------------------------------------------
-// Queue proxy fallback
-// ------------------------------------------------------------
-
-async function queueProxyFallback({
-    originalUrl,
-    url,
-    log,
-}) {
-    if (!proxyConfiguration) {
-        return false;
-    }
-
-    const profileKey = originalUrl.toLowerCase();
-
-    if (successfulProfiles.has(profileKey)) {
-        log.info(
-            `Profile already succeeded. Proxy fallback is not required: ${originalUrl}`
-        );
-
-        return false;
-    }
-
-    const convertedUrl = convertLinkedInUrl(url);
-
-    await proxyQueue.addRequest({
-        url: convertedUrl,
-
-        // Unique key is required because this URL already existed
-        // in the direct queue.
-        uniqueKey: `${convertedUrl}-proxy-fallback`,
-
-        userData: {
-            originalUrl,
-            isProxyUsed: true,
-            isProxyFallback: true,
-            retryCount: 0,
-        },
-    });
-
-    log.info(
-        `Queued proxy fallback for: ${originalUrl}`
-    );
-
-    return true;
-}
-
-
-// ------------------------------------------------------------
-// Direct crawler
-// ------------------------------------------------------------
-
-const directCrawler = new PuppeteerCrawler({
-    requestQueue,
-
-    // IMPORTANT:
-    // Direct crawler must NOT use a proxy.
-    proxyConfiguration: undefined,
-
-    maxConcurrency,
-    maxRequestRetries,
-    requestHandlerTimeoutSecs,
-
-    launchContext: {
-        launcher: puppeteerExtra,
-
-        launchOptions: {
-            headless: true,
-        },
-    },
-
-    preNavigationHooks: [
-        async ({ page }) => {
-            await page.setUserAgent(DEFAULT_USER_AGENT);
-
-            if (disableImagesStylesFonts) {
-                await page.setRequestInterception(true);
-
-                page.on('request', request => {
-                    const resourceType = request.resourceType();
-
-                    if (
-                        resourceType === 'image' ||
-                        resourceType === 'stylesheet' ||
-                        resourceType === 'font'
-                    ) {
-                        request.abort();
-                    } else {
-                        request.continue();
-                    }
-                });
-            }
-        },
-    ],
-
-    async requestHandler({ page, request, log }) {
-        const originalUrl =
-            request.userData?.originalUrl || request.url;
-
-        log.info(
-            `Scraping LinkedIn profile directly: ${originalUrl}`
-        );
-
-        try {
-            const results = await scrapeProfile({
+            async requestHandler({
                 page,
                 request,
                 log,
-                isProxyUsed: false,
-            });
+                injectJQuery,
+            }) {
 
-            await markProfileSuccessful({
-                originalUrl,
-                results,
-                isProxyUsed: false,
-                log,
-            });
+                try {
 
-        } catch (error) {
-            failedCount++;
+                    const results =
+                        await scrapeProfile({
+                            page,
+                            request,
+                            log,
+                            injectJQuery,
+                            isProxyUsed: false,
+                        });
 
-            log.error(
-                `Direct scraping failed for ${originalUrl}: ${error.message}`
-            );
 
-            // ------------------------------------------------
-            // IMPORTANT:
-            //
-            // Do NOT store a failure yet.
-            //
-            // First send the profile to the actual proxy queue.
-            // ------------------------------------------------
+                    successfulUrls.add(
+                        request.url
+                    );
 
-            if (
-                useProxyOnlyAfterFail &&
-                proxyConfiguration
-            ) {
-                const queued = await queueProxyFallback({
-                    originalUrl,
-                    url: request.url,
-                    log,
-                });
 
-                if (queued) {
-                    return;
+                    /*
+                     * IMPORTANT:
+                     *
+                     * Charge only after Dataset push succeeds.
+                     *
+                     * One profile = one billing event.
+                     */
+
+                    await Actor.charge({
+                        eventName: 'profile-scraped',
+                        count: 1,
+                    });
+
+
+                    log.info(
+                        `Successfully scraped profile: ` +
+                        `${request.url} | ` +
+                        `items=${results.length}`
+                    );
+
+                } catch (error) {
+
+                    const message =
+                        error?.message ??
+                        String(error);
+
+
+                    directFailedUrls.set(
+                        request.url,
+                        message
+                    );
+
+
+                    log.warning(
+                        `Direct scraping failed: ` +
+                        `${request.url} | ${message}`
+                    );
+
+
+                    throw error;
                 }
-            }
-
-            // ------------------------------------------------
-            // No proxy available or proxy fallback disabled.
-            // Store final failure.
-            // ------------------------------------------------
-
-            await storeFailure({
-                originalUrl,
-                error,
-                isProxyUsed: false,
-            });
-        }
-    },
-
-    async failedRequestHandler({ request, log }) {
-        const originalUrl =
-            request.userData?.originalUrl || request.url;
-
-        log.error(
-            `Direct request permanently failed: ${originalUrl}`
-        );
-
-        // ----------------------------------------------------
-        // If Crawlee itself exhausts direct retries, we still
-        // need to send the profile to the proxy queue.
-        // ----------------------------------------------------
-
-        if (
-            useProxyOnlyAfterFail &&
-            proxyConfiguration
-        ) {
-            const queued = await queueProxyFallback({
-                originalUrl,
-                url: request.url,
-                log,
-            });
-
-            if (queued) {
-                return;
-            }
-        }
-
-        await storeFailure({
-            originalUrl,
-            error: new Error(
-                'Direct request permanently failed.'
-            ),
-            isProxyUsed: false,
-        });
-    },
-});
+            },
 
 
-// ------------------------------------------------------------
-// Proxy crawler
-// ------------------------------------------------------------
-
-const proxyCrawler = new PuppeteerCrawler({
-    requestQueue: proxyQueue,
-
-    // IMPORTANT:
-    // This crawler is the ONLY crawler that uses the proxy.
-    proxyConfiguration,
-
-    maxConcurrency: 1,
-    maxRequestRetries: maxProxiedRetries,
-    requestHandlerTimeoutSecs,
-
-    launchContext: {
-        launcher: puppeteerExtra,
-
-        launchOptions: {
-            headless: true,
-        },
-    },
-
-    preNavigationHooks: [
-        async ({ page }) => {
-            await page.setUserAgent(DEFAULT_USER_AGENT);
-
-            if (disableImagesStylesFonts) {
-                await page.setRequestInterception(true);
-
-                page.on('request', request => {
-                    const resourceType = request.resourceType();
-
-                    if (
-                        resourceType === 'image' ||
-                        resourceType === 'stylesheet' ||
-                        resourceType === 'font'
-                    ) {
-                        request.abort();
-                    } else {
-                        request.continue();
-                    }
-                });
-            }
-        },
-    ],
-
-    async requestHandler({ page, request, log }) {
-        const originalUrl =
-            request.userData?.originalUrl || request.url;
-
-        log.info(
-            `Scraping LinkedIn profile with proxy: ${originalUrl}`
-        );
-
-        try {
-            const results = await scrapeProfile({
-                page,
+            async failedRequestHandler({
                 request,
                 log,
+            }) {
 
-                // IMPORTANT:
-                // This is now definitely true because this handler
-                // only belongs to the proxy crawler.
-                isProxyUsed: true,
-            });
+                directFailedUrls.set(
+                    request.url,
+                    directFailedUrls.get(
+                        request.url
+                    ) ?? 'Page unreachable.'
+                );
 
-            await markProfileSuccessful({
-                originalUrl,
-                results,
-                isProxyUsed: true,
-                log,
-            });
 
-        } catch (error) {
-            failedCount++;
-
-            log.error(
-                `Proxy scraping failed for ${originalUrl}: ${error.message}`
-            );
-
-            // ------------------------------------------------
-            // Proxy has now failed.
-            //
-            // This is the FINAL failure.
-            // ------------------------------------------------
-
-            await storeFailure({
-                originalUrl,
-                error,
-                isProxyUsed: true,
-            });
-        }
-    },
-
-    async failedRequestHandler({ request, log }) {
-        const originalUrl =
-            request.userData?.originalUrl || request.url;
-
-        log.error(
-            `Proxy request permanently failed: ${originalUrl}`
-        );
-
-        await storeFailure({
-            originalUrl,
-            error: new Error(
-                'Proxy request permanently failed.'
-            ),
-            isProxyUsed: true,
+                log.warning(
+                    `Direct request permanently failed: ` +
+                    `${request.url}`
+                );
+            },
         });
-    },
-});
 
 
-// ------------------------------------------------------------
-// Run direct crawler
-// ------------------------------------------------------------
-
-await directCrawler.run();
+    await crawler.run();
+}
 
 
-// ------------------------------------------------------------
-// Process proxy queue
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Proxy crawler
+|--------------------------------------------------------------------------
+*/
 
-if (
-    useProxyOnlyAfterFail &&
-    proxyConfiguration
+async function runProxyCrawler(
+    urlsToRetry
 ) {
-    const proxyInfo = await proxyQueue.getInfo();
 
     if (
-        proxyInfo &&
-        proxyInfo.totalRequestCount > 0
+        urlsToRetry.length === 0 ||
+        !hasProxy
     ) {
-        logProxyQueueInfo(proxyInfo);
+        return;
+    }
 
-        await proxyCrawler.run();
+
+    const queue =
+        await createQueue(
+            urlsToRetry,
+            `linkedin-proxy-${Date.now()}`
+        );
+
+
+    const crawler =
+        new PuppeteerCrawler({
+
+            requestQueue: queue,
+
+            proxyConfiguration,
+
+            launchContext: {
+
+                launcher: puppeteer,
+
+                launchOptions: {
+                    headless: true,
+                },
+            },
+
+            maxConcurrency,
+
+            maxRequestRetries:
+                maxProxiedRetries,
+
+            requestHandlerTimeoutSecs,
+
+
+            preNavigationHooks: [
+                setupPage,
+            ],
+
+
+            async requestHandler({
+                page,
+                request,
+                log,
+                injectJQuery,
+            }) {
+
+                try {
+
+                    const results =
+                        await scrapeProfile({
+                            page,
+                            request,
+                            log,
+                            injectJQuery,
+                            isProxyUsed: true,
+                        });
+
+
+                    successfulUrls.add(
+                        request.url
+                    );
+
+
+                    /*
+                     * Charge ONLY after successful
+                     * Dataset insertion.
+                     */
+
+                    await Actor.charge({
+                        eventName: 'profile-scraped',
+                        count: 1,
+                    });
+
+
+                    log.info(
+                        `Successfully scraped profile using proxy: ` +
+                        `${request.url} | ` +
+                        `items=${results.length}`
+                    );
+
+                } catch (error) {
+
+                    log.warning(
+                        `Proxy scraping failed: ` +
+                        `${request.url} | ` +
+                        `${error?.message ?? error}`
+                    );
+
+                    throw error;
+                }
+            },
+
+
+            async failedRequestHandler({
+                request,
+                log,
+                page,
+            }) {
+
+                if (
+                    successfulUrls.has(
+                        request.url
+                    )
+                ) {
+                    return;
+                }
+
+
+                let note =
+                    'Page unreachable through configured proxy.';
+
+
+                try {
+
+                    if (
+                        page &&
+                        isAuthWall(page.url())
+                    ) {
+
+                        note =
+                            'Blocked by LinkedIn Authwall.';
+                    }
+
+                } catch {
+                    // Ignore page inspection failure.
+                }
+
+
+                if (
+                    !finalFailedUrls.has(
+                        request.url
+                    )
+                ) {
+
+                    finalFailedUrls.add(
+                        request.url
+                    );
+
+
+                    await Actor.pushData({
+
+                        url: request.url,
+
+                        status: 'failed',
+
+                        note,
+
+                        isProxyUsed: true,
+                    });
+                }
+
+
+                log.error(
+                    `Proxy request permanently failed: ` +
+                    `${request.url}`
+                );
+            },
+        });
+
+
+    await crawler.run();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Write direct failures when proxy fallback isn't enabled
+|--------------------------------------------------------------------------
+*/
+
+async function writeDirectFailures() {
+
+    for (
+        const [url, error] of directFailedUrls.entries()
+    ) {
+
+        if (
+            successfulUrls.has(url) ||
+            finalFailedUrls.has(url)
+        ) {
+            continue;
+        }
+
+
+        finalFailedUrls.add(url);
+
+
+        await Actor.pushData({
+
+            url,
+
+            status: 'failed',
+
+            note: error || 'Page unreachable.',
+
+            isProxyUsed: false,
+        });
     }
 }
 
 
-// ------------------------------------------------------------
-// Final statistics
-// ------------------------------------------------------------
+/*
+|--------------------------------------------------------------------------
+| Main
+|--------------------------------------------------------------------------
+*/
 
-logFinalStats();
+try {
 
-function logProxyQueueInfo(proxyInfo) {
-    console.log('--------------------------------------------');
-    console.log('Proxy Fallback Queue');
-    console.log('--------------------------------------------');
+    /*
+     * Validate configuration.
+     */
+
+    if (
+        !onlyProfileInfo &&
+        !input.maxItems &&
+        !input.onlyPostsNewerThan
+    ) {
+
+        throw new Error(
+            'You must configure at least one limiting parameter: ' +
+            'maxItems or onlyPostsNewerThan. ' +
+            'Alternatively enable onlyProfileInfo.'
+        );
+    }
+
+
+    if (
+        useProxyOnlyAfterFail &&
+        !hasProxy
+    ) {
+
+        throw new Error(
+            'useProxyOnlyAfterFail is enabled but no proxy is configured.'
+        );
+    }
+
+
     console.log(
-        `Proxy requests queued: ${proxyInfo.totalRequestCount}`
+        '=========================================='
     );
-    console.log('--------------------------------------------');
+
+    console.log(
+        'LinkedIn Profile Posts Scraper'
+    );
+
+    console.log(
+        `Profiles requested: ${urls.length}`
+    );
+
+    console.log(
+        `Only profile info: ${onlyProfileInfo}`
+    );
+
+    console.log(
+        `Max posts per profile: ${maxItems}`
+    );
+
+    console.log(
+        `Proxy fallback: ${useProxyOnlyAfterFail}`
+    );
+
+    console.log(
+        `Custom proxy configured: ${customProxyUrls.length > 0}`
+    );
+
+    console.log(
+        '=========================================='
+    );
+
+
+    /*
+     * STEP 1
+     *
+     * Direct scraping.
+     */
+
+    await runDirectCrawler();
+
+
+    /*
+     * STEP 2
+     *
+     * Retry only direct failures using proxy.
+     */
+
+    if (
+        useProxyOnlyAfterFail &&
+        hasProxy
+    ) {
+
+        const retryUrls =
+            [...directFailedUrls.keys()]
+                .filter(
+                    url =>
+                        !successfulUrls.has(url)
+                );
+
+
+        if (retryUrls.length > 0) {
+
+            console.log(
+                `Retrying ${retryUrls.length} profile(s) using proxy.`
+            );
+
+
+            await runProxyCrawler(
+                retryUrls
+            );
+        }
+    }
+
+
+    /*
+     * STEP 3
+     *
+     * If proxy fallback is disabled,
+     * write final direct failures.
+     */
+
+    if (
+        !useProxyOnlyAfterFail
+    ) {
+
+        await writeDirectFailures();
+    }
+
+
+    /*
+     * If proxy was enabled but some URLs failed
+     * direct + proxy, proxy crawler already writes
+     * the final failure records.
+     */
+
+
+    console.log(
+        '=========================================='
+    );
+
+    console.log(
+        `Profiles requested: ${urls.length}`
+    );
+
+    console.log(
+        `Profiles successful: ${successfulUrls.size}`
+    );
+
+    console.log(
+        `Profiles failed: ${finalFailedUrls.size}`
+    );
+
+    console.log(
+        '=========================================='
+    );
+
+} catch (error) {
+
+    console.error(
+        'Actor execution failed:',
+        error
+    );
+
+    throw error;
+
+} finally {
+
+    await Actor.exit();
 }
-
-
-function logFinalStats() {
-    console.log('--------------------------------------------');
-    console.log('LinkedIn Profile Scraper - Run Summary');
-    console.log('--------------------------------------------');
-
-    console.log(
-        `Requested profiles : ${limitedUrls.length}`
-    );
-
-    console.log(
-        `Successful profiles: ${successfulCount}`
-    );
-
-    console.log(
-        `Direct successes   : ${directSuccessCount}`
-    );
-
-    console.log(
-        `Proxy successes    : ${proxySuccessCount}`
-    );
-
-    console.log(
-        `Failed attempts    : ${failedCount}`
-    );
-
-    // --------------------------------------------------------
-    // Actual price:
-    // $0.005 per successful profile
-    // --------------------------------------------------------
-
-    console.log(
-        `Estimated PPE      : $${(successfulCount * 0.005).toFixed(3)}`
-    );
-
-    console.log('--------------------------------------------');
-}
-
-
-await Actor.exit();

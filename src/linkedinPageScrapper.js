@@ -1,517 +1,870 @@
-import ArticleProvider from './articleProvider.js';
+import { ArticleProvider } from './articleProvider.js';
 
-export default class LinkedinPageScrapper {
-    constructor({
+export class LinkedinPageScrapper {
+
+    constructor(
         page,
-        request,
         log,
-        config = {},
-        isProxyUsed = false,
-    }) {
+        request,
+        actorInput,
+        isProxyUsed
+    ) {
+
         this.page = page;
-        this.request = request;
+
         this.log = log;
 
-        this.config = {
-            maxItems: config.maxItems ?? 20,
-            onlyProfileInfo: config.onlyProfileInfo ?? false,
-            includeProfileInfo: config.includeProfileInfo ?? true,
-        };
+        this.request = request;
+
+        this.config = actorInput;
 
         this.isProxyUsed = isProxyUsed;
     }
 
-    // --------------------------------------------------------
-    // Main processing
-    // --------------------------------------------------------
 
     async process() {
-        const url = this.request.url;
 
-        if (!url) {
-            throw new Error('LinkedIn URL is missing.');
+        /*
+         * Validate URL.
+         */
+
+        if (
+            !this._validateLinkedInURL(
+                this.request.url
+            )
+        ) {
+
+            return [{
+                url: this.request.url,
+
+                status: 'failed',
+
+                note:
+                    'Input URL does not match LinkedIn URL format.',
+
+                isProxyUsed:
+                    this.isProxyUsed,
+            }];
         }
 
-        this.log.info(`Opening LinkedIn URL: ${url}`);
 
-        await this._loginPage();
+        this.log.info(
+            `Starting scraping: ${this.request.url}`
+        );
 
-        await this._closeSignInModal();
+
+        if (this.config.maxItems) {
+
+            this.log.info(
+                `MaxItems: ${this.config.maxItems}`
+            );
+        }
+
+
+        if (this.config.onlyPostsNewerThan) {
+
+            this.log.info(
+                `OnlyPostsNewerThan: ` +
+                `${this.config.onlyPostsNewerThan}`
+            );
+        }
+
+
+        /*
+         * Page not found.
+         */
+
+        if (
+            await this._pageNotFound()
+        ) {
+
+            return [{
+                url: this.request.url,
+
+                status: 'failed',
+
+                note: 'Page not found.',
+
+                isProxyUsed:
+                    this.isProxyUsed,
+            }];
+        }
+
+
+        /*
+         * Prepare page.
+         */
 
         await this._overrideDelayedImageAttributes();
 
-        if (await this._pageNotFound()) {
-            throw new Error(
-                `LinkedIn page not found: ${url}`
-            );
-        }
+        await this._closeSignInModal();
 
-        // ----------------------------------------------------
-        // IMPORTANT:
-        // profileType is calculated in Node context.
-        // Do NOT call this._detectProfileType inside
-        // page.evaluate().
-        // ----------------------------------------------------
 
-        const profileType = this._detectProfileType(url);
+        /*
+         * Make sure LinkedIn main content exists.
+         */
 
-        const profileInfo =
-            await this._getProfileInfo(profileType);
-
-        if (this.config.onlyProfileInfo) {
-            return [
-                {
-                    ...profileInfo,
-                    isProxyUsed: this.isProxyUsed,
-                },
-            ];
-        }
-
-        const articleProvider = new ArticleProvider({
-            page: this.page,
-            log: this.log,
-        });
-
-        const articles = [];
-
-        for (
-            let index = 0;
-            index < this.config.maxItems;
-            index++
-        ) {
-            try {
-                const article =
-                    await articleProvider.getArticle(index);
-
-                if (!article) {
-                    break;
-                }
-
-                // Avoid empty articles.
-                if (
-                    !article.postId &&
-                    !article.postUrl &&
-                    !article.postText
-                ) {
-                    continue;
-                }
-
-                articles.push(article);
-            } catch (error) {
-                this.log.warning(
-                    `Unable to extract article ${index}: ${error.message}`
-                );
-            }
-        }
-
-        // ----------------------------------------------------
-        // If no posts were found, still return profile info.
-        // ----------------------------------------------------
-
-        if (articles.length === 0) {
-            return [
-                {
-                    ...profileInfo,
-                    isProxyUsed: this.isProxyUsed,
-                },
-            ];
-        }
-
-        // ----------------------------------------------------
-        // Merge profile information into every post.
-        // ----------------------------------------------------
-
-        return articles.map(article => {
-            if (!this.config.includeProfileInfo) {
-                return {
-                    ...article,
-                    isProxyUsed: this.isProxyUsed,
-                };
-            }
-
-            return {
-                ...profileInfo,
-                ...article,
-                isProxyUsed: this.isProxyUsed,
-            };
-        });
-    }
-
-    // --------------------------------------------------------
-    // Profile type
-    // --------------------------------------------------------
-
-    _detectProfileType(url) {
-        if (!url) {
-            return 'unknown';
-        }
-
-        const normalizedUrl = url.toLowerCase();
-
-        if (
-            normalizedUrl.includes('/company/') ||
-            normalizedUrl.includes('/organization-guest/company/')
-        ) {
-            return 'company';
-        }
-
-        if (
-            normalizedUrl.includes('/school/') ||
-            normalizedUrl.includes('/organization-guest/school/')
-        ) {
-            return 'school';
-        }
-
-        if (
-            normalizedUrl.includes('/showcase/') ||
-            normalizedUrl.includes('/organization-guest/showcase/')
-        ) {
-            return 'showcase';
-        }
-
-        if (
-            normalizedUrl.includes('/in/') ||
-            normalizedUrl.includes('/organization-guest/in/')
-        ) {
-            return 'person';
-        }
-
-        return 'unknown';
-    }
-
-    // --------------------------------------------------------
-    // Profile information
-    // --------------------------------------------------------
-
-    async _getProfileInfo(profileType) {
-        const url = this.request.url;
-
-        return await this.page.evaluate(
-            (url, isProxyUsed, profileType) => {
-                const cleanText = value => {
-                    if (!value) {
-                        return undefined;
-                    }
-
-                    const text =
-                        String(value)
-                            .replace(/\s+/g, ' ')
-                            .trim();
-
-                    return text || undefined;
-                };
-
-                const getText = selectors => {
-                    for (const selector of selectors) {
-                        const element =
-                            document.querySelector(selector);
-
-                        if (element) {
-                            const text =
-                                cleanText(
-                                    element.innerText ||
-                                    element.textContent
-                                );
-
-                            if (text) {
-                                return text;
-                            }
-                        }
-                    }
-
-                    return undefined;
-                };
-
-                const getAttribute = (
-                    selectors,
-                    attribute
-                ) => {
-                    for (const selector of selectors) {
-                        const element =
-                            document.querySelector(selector);
-
-                        if (element) {
-                            const value =
-                                element.getAttribute(attribute);
-
-                            if (value) {
-                                return value.trim();
-                            }
-                        }
-                    }
-
-                    return undefined;
-                };
-
-                const getFollowersCount = () => {
-                    const bodyText =
-                        document.body?.innerText || '';
-
-                    const match =
-                        bodyText.match(
-                            /([\d,.]+)\s*(followers|follower)/i
-                        );
-
-                    if (!match) {
-                        return undefined;
-                    }
-
-                    const raw =
-                        match[1]
-                            .replace(/,/g, '')
-                            .replace(/\./g, '');
-
-                    const parsed =
-                        Number.parseInt(raw, 10);
-
-                    return Number.isFinite(parsed)
-                        ? parsed
-                        : undefined;
-                };
-
-                const profileName =
-                    getText([
-                        'h1',
-                        '.org-top-card-summary__title',
-                        '.org-top-card-summary-info-list__info-item',
-                        '.pv-text-details__left-panel h1',
-                        '.text-heading-xlarge',
-                    ]);
-
-                const profileTitle =
-                    getText([
-                        '.org-top-card-summary__tagline',
-                        '.org-top-card-summary-info-list__info-item',
-                        '.text-body-medium',
-                        '.pv-text-details__left-panel .text-body-medium',
-                    ]);
-
-                const profileDescription =
-                    getText([
-                        '.org-about-us-organization-description__text',
-                        '.break-words.white-space-pre-wrap',
-                        '.org-about-company-module__description',
-                        '.about-us__description',
-                    ]);
-
-                let companyUrl =
-                    getAttribute(
-                        [
-                            'a[data-tracking-control-name*="website"]',
-                            'a[href*="http"]',
-                            '.org-about-company-module__website a',
-                        ],
-                        'href'
-                    );
-
-                if (
-                    companyUrl &&
-                    companyUrl.startsWith('/')
-                ) {
-                    companyUrl =
-                        `https://www.linkedin.com${companyUrl}`;
-                }
-
-                let companySize =
-                    getText([
-                        '.org-about-company-module__company-size-definition-text',
-                        '.org-about-company-module__company-size',
-                    ]);
-
-                if (!companySize) {
-                    const bodyText =
-                        document.body?.innerText || '';
-
-                    const sizeMatch =
-                        bodyText.match(
-                            /(\d[\d,]*\s*-\s*\d[\d,]*\s*employees)/i
-                        );
-
-                    if (sizeMatch) {
-                        companySize =
-                            cleanText(sizeMatch[1]);
-                    }
-                }
-
-                const followersCount =
-                    getFollowersCount();
-
-                return {
-                    profileUrl: url,
-                    profileType,
-                    profileName,
-                    profileTitle,
-                    profileDescription,
-                    companyUrl,
-                    companySize,
-                    followersCount,
-                    isProxyUsed,
-                };
-            },
-            url,
-            this.isProxyUsed,
-            profileType
-        );
-    }
-
-    // --------------------------------------------------------
-    // Authentication / auth-wall detection
-    // --------------------------------------------------------
-
-    async _loginPage() {
-        // Native delay. Puppeteer v25 no longer provides
-        // page.waitForTimeout().
-        await this._sleep(1500);
-
-        const currentUrl =
-            this.page.url().toLowerCase();
-
-        if (this._isAuthenticationUrl(currentUrl)) {
-            throw new Error(
-                `LinkedIn authentication wall detected: ${currentUrl}`
-            );
-        }
-
-        // LinkedIn can sometimes render an auth wall without
-        // changing the URL. Check the page content as well.
-        const authWallDetected =
-            await this.page.evaluate(() => {
-                const bodyText =
-                    document.body?.innerText?.toLowerCase() || '';
-
-                return (
-                    bodyText.includes('sign in to linkedin') ||
-                    bodyText.includes('join linkedin') ||
-                    bodyText.includes('sign up on linkedin') ||
-                    bodyText.includes('authentication required') ||
-                    bodyText.includes('please sign in')
-                );
-            }).catch(() => false);
-
-        if (authWallDetected) {
-            throw new Error(
-                `LinkedIn authentication wall detected: ${currentUrl}`
-            );
-        }
-    }
-
-    _isAuthenticationUrl(url) {
-        if (!url) {
-            return false;
-        }
-
-        const normalizedUrl =
-            url.toLowerCase();
-
-        return (
-            normalizedUrl.includes('/login') ||
-            normalizedUrl.includes('/checkpoint') ||
-            normalizedUrl.includes('/authwall')
-        );
-    }
-
-    // --------------------------------------------------------
-    // Sleep helper
-    // --------------------------------------------------------
-
-    async _sleep(milliseconds) {
-        await new Promise(resolve =>
-            setTimeout(resolve, milliseconds)
-        );
-    }
-
-    // --------------------------------------------------------
-    // Page not found
-    // --------------------------------------------------------
-
-    async _pageNotFound() {
         try {
-            const result =
-                await this.page.evaluate(() => {
-                    const bodyText =
-                        document.body?.innerText || '';
 
-                    const text =
-                        bodyText.toLowerCase();
+            const isElementPresent =
+                await this.page.evaluate(() => {
 
                     return (
-                        text.includes('page not found') ||
-                        text.includes('this page doesn’t exist') ||
-                        text.includes("this page doesn't exist") ||
-                        text.includes('profile not found') ||
-                        text.includes('something went wrong')
+                        document.querySelector(
+                            '#main-content'
+                        ) !== null
                     );
                 });
 
-            return result;
-        } catch {
-            return false;
-        }
-    }
 
-    // --------------------------------------------------------
-    // Delayed images
-    // --------------------------------------------------------
+            if (!isElementPresent) {
 
-    async _overrideDelayedImageAttributes() {
-        try {
-            await this.page.evaluate(() => {
-                const images =
-                    document.querySelectorAll('img');
-
-                for (const image of images) {
-                    const dataSrc =
-                        image.getAttribute('data-src');
-
-                    const lazySrc =
-                        image.getAttribute('data-lazy-src');
-
-                    const source =
-                        dataSrc || lazySrc;
-
-                    if (
-                        source &&
-                        !image.getAttribute('src')
-                    ) {
-                        image.setAttribute(
-                            'src',
-                            source
-                        );
+                await this.page.waitForSelector(
+                    '#main-content',
+                    {
+                        timeout: 5000,
                     }
-                }
-            });
-        } catch {
-            // Intentionally ignored.
+                );
+            }
+
+        } catch (error) {
+
+            if (
+                await this._loginPage()
+            ) {
+
+                return [{
+                    url: this.request.url,
+
+                    status: 'failed',
+
+                    note: 'Login required.',
+
+                    isProxyUsed:
+                        this.isProxyUsed,
+                }];
+            }
+
+
+            this.log.error(
+                error.message
+            );
+
+            throw error;
         }
-    }
 
-    // --------------------------------------------------------
-    // Close LinkedIn sign-in modal
-    // --------------------------------------------------------
 
-    async _closeSignInModal() {
-        try {
-            const selectors = [
-                'button[aria-label="Dismiss"]',
-                'button[aria-label="Close"]',
-                '.artdeco-modal__dismiss',
-                '.modal-close-button',
+        /*
+         * Profile information.
+         */
+
+        const profileInfo =
+            await this._getProfileInfo();
+
+
+        /*
+         * Profile-only mode.
+         */
+
+        if (
+            this.config.onlyProfileInfo
+        ) {
+
+            return [
+                profileInfo
             ];
+        }
 
-            for (const selector of selectors) {
-                const button =
-                    await this.page.$(selector);
 
-                if (button) {
-                    await button.click().catch(() => {});
+        /*
+         * Posts mode.
+         */
 
-                    await this._sleep(300);
+        const result = [];
+
+        const articleProvider =
+            new ArticleProvider(
+                this.page
+            );
+
+
+        /*
+         * LinkedIn can have pinned posts.
+         */
+
+        const maxPinnedPosts = 5;
+
+
+        let index = 0;
+
+
+        const maxItems =
+            Number(this.config.maxItems ?? 10);
+
+
+        const pageUrl =
+            this.page.url();
+
+
+        const profile =
+            this.extractProfileIdentifier(
+                pageUrl
+            );
+
+
+        while (
+            result.length < maxItems
+        ) {
+
+            try {
+
+                const article =
+                    await articleProvider.getArticle(
+                        index
+                    );
+
+
+                /*
+                 * No more posts.
+                 */
+
+                if (!article) {
 
                     break;
                 }
+
+
+                /*
+                 * Make sure the post belongs to
+                 * the requested profile/company.
+                 *
+                 * Some LinkedIn pages can expose
+                 * unrelated/reposted content.
+                 */
+
+                if (
+                    profile &&
+                    article.postUrl &&
+                    !article.postUrl.includes(
+                        profile
+                    )
+                ) {
+
+                    break;
+                }
+
+
+                /*
+                 * Date filtering.
+                 */
+
+                const minDate =
+                    this.config.onlyPostsNewerThan;
+
+
+                if (
+                    minDate &&
+                    article.postDate
+                ) {
+
+                    const articleDate =
+                        new Date(
+                            article.postDate
+                        );
+
+                    const minimumDate =
+                        new Date(
+                            minDate
+                        );
+
+
+                    if (
+                        !Number.isNaN(
+                            articleDate.getTime()
+                        ) &&
+                        !Number.isNaN(
+                            minimumDate.getTime()
+                        ) &&
+                        articleDate < minimumDate
+                    ) {
+
+                        /*
+                         * Skip old pinned posts.
+                         */
+
+                        if (
+                            result.length <
+                            index - maxPinnedPosts
+                        ) {
+
+                            this.log.info(
+                                `Actor ends work due to date filter: ${minDate}`
+                            );
+
+                            break;
+                        }
+
+
+                        index++;
+
+                        continue;
+                    }
+                }
+
+
+                /*
+                 * Add profile information to
+                 * every post if requested.
+                 */
+
+                let outputItem;
+
+
+                if (
+                    this.config.includeProfileInfo
+                ) {
+
+                    outputItem = {
+                        ...profileInfo,
+                        ...article,
+                    };
+
+                } else {
+
+                    outputItem = {
+                        ...article,
+
+                        url:
+                            this.request.url,
+
+                        isProxyUsed:
+                            this.isProxyUsed,
+                    };
+                }
+
+
+                /*
+                 * Ensure proxy information exists.
+                 */
+
+                outputItem.isProxyUsed =
+                    this.isProxyUsed;
+
+
+                /*
+                 * Add result to memory.
+                 *
+                 * DO NOT push to Dataset here.
+                 * main.js handles Dataset writes.
+                 */
+
+                result.push(
+                    outputItem
+                );
+
+
+                this.log.info(
+                    `Article #${result.length} scraped.`
+                );
+
+
+                index++;
+
+
+                await this._overrideDelayedImageAttributes();
+
+            } catch (error) {
+
+                this.log.error(
+                    `Article scraping error: ` +
+                    `${error.message}`
+                );
+
+                break;
             }
-        } catch {
-            // Modal is optional.
         }
+
+
+        /*
+         * If no posts were found but profile
+         * information was requested, return
+         * profile information.
+         */
+
+        if (
+            result.length === 0 &&
+            this.config.includeProfileInfo
+        ) {
+
+            return [
+                profileInfo
+            ];
+        }
+
+
+        if (
+            result.length === maxItems
+        ) {
+
+            this.log.info(
+                `Actor ends work due to MaxItems limit: ${maxItems}`
+            );
+        }
+
+
+        return result;
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | Extract LinkedIn profile/company identifier
+     |--------------------------------------------------------------------------
+     */
+
+    extractProfileIdentifier(url) {
+
+        try {
+
+            const cleanUrl =
+                url.split('?')[0]
+                    .replace(/\/+$/, '');
+
+
+            const parts =
+                cleanUrl.split('/');
+
+
+            return parts[
+                parts.length - 1
+            ] || null;
+
+        } catch {
+
+            return null;
+        }
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | Page not found
+     |--------------------------------------------------------------------------
+     */
+
+    async _pageNotFound() {
+
+        return await this.page.evaluate(() => {
+
+            const pageNotFound =
+                document.getElementsByClassName(
+                    'not-found-404'
+                );
+
+            return (
+                pageNotFound.length > 0
+            );
+        });
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | Login page detection
+     |--------------------------------------------------------------------------
+     */
+
+    async _loginPage() {
+
+        return await this.page.evaluate(() => {
+
+            const mainContent =
+                document.getElementById(
+                    'main-content'
+                );
+
+
+            if (mainContent) {
+
+                return (
+                    mainContent.getElementsByClassName(
+                        'join-form'
+                    ).length > 0
+                );
+            }
+
+
+            const cardLayout =
+                document.getElementsByClassName(
+                    'card-layout'
+                );
+
+
+            if (
+                cardLayout.length > 0
+            ) {
+
+                return (
+                    cardLayout[0]
+                        .getElementsByClassName(
+                            'login__form'
+                        ).length > 0
+                );
+            }
+
+
+            return false;
+        });
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | LinkedIn delayed images
+     |--------------------------------------------------------------------------
+     */
+
+    async _overrideDelayedImageAttributes() {
+
+        await this.page.evaluate(() => {
+
+            const delayedElements =
+                document.querySelectorAll(
+                    '[data-delayed-url]'
+                );
+
+
+            delayedElements.forEach(
+                element => {
+
+                    const url =
+                        element.getAttribute(
+                            'data-delayed-url'
+                        );
+
+
+                    if (url) {
+
+                        element.setAttribute(
+                            'data-delayed-url_custom',
+                            url
+                        );
+                    }
+                }
+            );
+        });
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | Profile information
+     |--------------------------------------------------------------------------
+     */
+
+    async _getProfileInfo() {
+
+        const profileInfo =
+            await this.page.evaluate(
+                (url, isProxyUsed) => {
+
+                    const mainContent =
+                        document.getElementById(
+                            'main-content'
+                        );
+
+
+                    if (!mainContent) {
+
+                        throw new Error(
+                            'LinkedIn main content not found.'
+                        );
+                    }
+
+
+                    /*
+                     * Profile container.
+                     */
+
+                    const profileInfoContainer =
+                        mainContent
+                            .getElementsByClassName(
+                                'top-card-layout__entity-info-container'
+                            )[0];
+
+
+                    /*
+                     * Profile name.
+                     */
+
+                    let profileName = null;
+
+
+                    if (
+                        profileInfoContainer
+                    ) {
+
+                        const h1 =
+                            profileInfoContainer
+                                .getElementsByTagName(
+                                    'h1'
+                                )[0];
+
+
+                        if (h1) {
+
+                            profileName =
+                                h1.innerText?.trim() ||
+                                null;
+                        }
+                    }
+
+
+                    /*
+                     * Profile title.
+                     */
+
+                    let profileTitle = null;
+
+
+                    const h2 =
+                        mainContent
+                            .getElementsByTagName(
+                                'h2'
+                            )[0];
+
+
+                    if (h2) {
+
+                        profileTitle =
+                            h2.innerText?.trim() ||
+                            null;
+                    }
+
+
+                    /*
+                     * Description.
+                     */
+
+                    let profileDescription =
+                        null;
+
+
+                    const aboutDescription =
+                        mainContent.querySelector(
+                            "[data-test-id='about-us__description']"
+                        );
+
+
+                    if (
+                        aboutDescription
+                    ) {
+
+                        profileDescription =
+                            aboutDescription.innerText?.trim() ||
+                            null;
+                    }
+
+
+                    /*
+                     * Company website.
+                     */
+
+                    let companyUrl =
+                        null;
+
+
+                    const aboutWebsite =
+                        mainContent.querySelector(
+                            "[data-tracking-control-name='about_website']"
+                        );
+
+
+                    if (
+                        aboutWebsite
+                    ) {
+
+                        companyUrl =
+                            aboutWebsite.innerText?.trim() ||
+                            null;
+                    }
+
+
+                    /*
+                     * Company size.
+                     */
+
+                    let companySize =
+                        null;
+
+
+                    const aboutUsSize =
+                        mainContent.querySelector(
+                            "[data-test-id='about-us__size']"
+                        );
+
+
+                    if (
+                        aboutUsSize &&
+                        aboutUsSize.children.length > 1
+                    ) {
+
+                        companySize =
+                            aboutUsSize
+                                .children[1]
+                                .innerText
+                                ?.trim() ||
+                            null;
+                    }
+
+
+                    /*
+                     * Followers.
+                     */
+
+                    const getFollowersCount = () => {
+
+                        const meta =
+                            document.querySelector(
+                                'meta[name="description"]'
+                            );
+
+
+                        if (!meta) {
+                            return null;
+                        }
+
+
+                        const content =
+                            meta.getAttribute(
+                                'content'
+                            );
+
+
+                        if (!content) {
+                            return null;
+                        }
+
+
+                        const parts =
+                            content.split('|');
+
+
+                        if (
+                            parts.length < 2
+                        ) {
+
+                            return null;
+                        }
+
+
+                        const regex =
+                            /(\d[\d,\s]*)+/;
+
+
+                        const match =
+                            parts[1].match(
+                                regex
+                            );
+
+
+                        if (!match) {
+                            return null;
+                        }
+
+
+                        const number =
+                            parseInt(
+                                match[0]
+                                    .replace(/,/g, '')
+                                    .trim(),
+                                10
+                            );
+
+
+                        return Number.isFinite(
+                            number
+                        )
+                            ? number
+                            : null;
+                    };
+
+
+                    return {
+
+                        url,
+
+                        profileName,
+
+                        profileTitle,
+
+                        profileDescription,
+
+                        companyUrl,
+
+                        companySize,
+
+                        followersCount:
+                            getFollowersCount(),
+
+                        isProxyUsed,
+                    };
+
+                },
+
+                this.request.url,
+
+                this.isProxyUsed
+            );
+
+
+        return profileInfo;
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | Close LinkedIn sign-in modal
+     |--------------------------------------------------------------------------
+     */
+
+    async _closeSignInModal() {
+
+        await this.page.evaluate(() => {
+
+            const dismissButton =
+                document.getElementsByClassName(
+                    'contextual-sign-in-modal__modal-dismiss'
+                )[0];
+
+
+            if (dismissButton) {
+
+                dismissButton.click();
+            }
+        });
+    }
+
+
+    /*
+     |--------------------------------------------------------------------------
+     | URL validation
+     |--------------------------------------------------------------------------
+     */
+
+    _validateLinkedInURL(input) {
+
+        if (!input) {
+            return false;
+        }
+
+
+        const regex =
+            /^https:\/\/[^/]*linkedin\.com\//i;
+
+
+        return regex.test(
+            input
+        );
     }
 }

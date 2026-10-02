@@ -1,110 +1,108 @@
 {
-    "title": "LinkedIn Profile Scraper Input",
-    "type": "object",
-    "schemaVersion": 1,
-    "properties": {
-        "startUrls": {
-            "title": "LinkedIn Profile URLs",
-            "type": "array",
-            "description": "Public LinkedIn profile, company, school or showcase URLs to scrape.",
-            "editor": "requestListSources",
-            "prefill": [
-                {
-                    "url": "https://www.linkedin.com/company/example/"
-                }
-            ]
-        },
-
-        "maxProfiles": {
-            "title": "Maximum Profiles",
-            "type": "integer",
-            "description": "Maximum number of LinkedIn profiles to process.",
-            "default": 10,
-            "minimum": 1,
-            "maximum": 1000
-        },
-
-        "maxItems": {
-            "title": "Maximum Posts Per Profile",
-            "type": "integer",
-            "description": "Maximum number of LinkedIn posts to extract from each profile.",
-            "default": 20,
-            "minimum": 1,
-            "maximum": 100
-        },
-
-        "onlyProfileInfo": {
-            "title": "Profile Information Only",
-            "type": "boolean",
-            "description": "Return profile/company information without scraping posts.",
-            "default": false
-        },
-
-        "includeProfileInfo": {
-            "title": "Include Profile Information With Posts",
-            "type": "boolean",
-            "description": "Include profile information in every post dataset item.",
-            "default": true
-        },
-
-        "useProxyOnlyAfterFail": {
-            "title": "Use Proxy After Direct Failure",
-            "type": "boolean",
-            "description": "First attempt direct scraping. If it fails, retry using an Apify proxy.",
-            "default": true
-        },
-
-        "proxy": {
-            "title": "Proxy Configuration",
-            "type": "object",
-            "description": "Optional proxy configuration.",
-            "editor": "json"
-        },
-
-        "maxProxiedRetries": {
-            "title": "Proxy Retries",
-            "type": "integer",
-            "description": "Number of retries when scraping through proxy.",
-            "default": 2,
-            "minimum": 0,
-            "maximum": 10
-        },
-
-        "maxConcurrency": {
-            "title": "Concurrency",
-            "type": "integer",
-            "description": "Number of direct pages processed concurrently.",
-            "default": 2,
-            "minimum": 1,
-            "maximum": 20
-        },
-
-        "maxRequestRetries": {
-            "title": "Request Retries",
-            "type": "integer",
-            "description": "Number of direct request retries.",
-            "default": 1,
-            "minimum": 0,
-            "maximum": 10
-        },
-
-        "requestHandlerTimeoutSecs": {
-            "title": "Request Timeout",
-            "type": "integer",
-            "description": "Maximum time allowed for one profile scrape.",
-            "default": 180,
-            "minimum": 30,
-            "maximum": 900
-        },
-
-        "disableImagesStylesFonts": {
-            "title": "Block Images, Styles and Fonts",
-            "type": "boolean",
-            "description": "Block unnecessary resources to reduce bandwidth and improve scraping speed.",
-            "default": true
+  "title": "LinkedIn Public Profile Scraper",
+  "description": "Scrape publicly accessible LinkedIn profile information and/or posts from one or more profile URLs.",
+  "type": "object",
+  "schemaVersion": 1,
+  "required": [
+    "startUrls"
+  ],
+  "properties": {
+    "startUrls": {
+      "title": "LinkedIn profile URLs",
+      "type": "array",
+      "description": "LinkedIn public profile URLs to scrape. Up to 100 unique URLs per run.",
+      "editor": "requestListSources",
+      "prefill": [
+        {
+          "url": "https://www.linkedin.com/in/example/"
         }
+      ],
+      "maxItems": 100
     },
-    "required": [
-        "startUrls"
-    ]
+    "maxProfiles": {
+      "title": "Maximum profiles",
+      "type": "integer",
+      "description": "Maximum number of profiles to process from the URL list.",
+      "editor": "number",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 100
+    },
+    "onlyProfileInfo": {
+      "title": "Profile information only",
+      "type": "boolean",
+      "description": "Return one structured profile record per URL and do not scrape posts.",
+      "default": true
+    },
+    "maxItems": {
+      "title": "Maximum posts per profile",
+      "type": "integer",
+      "description": "Maximum number of posts to return for each profile when Profile information only is disabled.",
+      "editor": "number",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 100
+    },
+    "onlyPostsNewerThan": {
+      "title": "Only posts newer than",
+      "type": "string",
+      "description": "Optional ISO/date filter for posts. Only used when post scraping is enabled.",
+      "editor": "datepicker",
+      "nullable": true
+    },
+    "includeProfileInfo": {
+      "title": "Include profile information with posts",
+      "type": "boolean",
+      "description": "Include profile fields in each post record when post scraping is enabled.",
+      "default": false
+    },
+    "proxy": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Optional Apify proxy configuration.",
+      "editor": "proxy",
+      "prefill": {
+        "useApifyProxy": false
+      }
+    },
+    "useProxyOnlyAfterFail": {
+      "title": "Use proxy only after failure",
+      "type": "boolean",
+      "description": "Retry failed requests with the configured proxy.",
+      "default": false
+    },
+    "maxProxiedRetries": {
+      "title": "Maximum proxied retries",
+      "type": "integer",
+      "description": "Maximum retries after switching to the configured proxy.",
+      "editor": "number",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 20
+    },
+    "maxRequestRetries": {
+      "title": "Request retries",
+      "type": "integer",
+      "description": "Retries before a request is considered failed.",
+      "editor": "number",
+      "default": 2,
+      "minimum": 0,
+      "maximum": 5
+    },
+    "maxConcurrency": {
+      "title": "Concurrency",
+      "type": "integer",
+      "description": "Number of profiles processed simultaneously. Lower values can improve reliability.",
+      "editor": "number",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 5
+    },
+    "disableImagesStylesFonts": {
+      "title": "Block images, styles and fonts",
+      "type": "boolean",
+      "description": "Reduces bandwidth and memory usage during scraping.",
+      "default": true
+    }
+  }
 }
