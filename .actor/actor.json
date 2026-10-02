@@ -3,7 +3,7 @@
   "name": "linkedin-public-profile-scraper",
   "title": "LinkedIn Public Profile Scraper",
   "description": "Extract structured information from publicly accessible LinkedIn profiles, with optional public post extraction.",
-  "version": "1.0",
+  "version": "1.1",
   "buildTag": "latest",
   "meta": {
     "templateId": "js-crawlee-puppeteer-chrome"
