@@ -407,7 +407,7 @@ export default class LinkedinPageScrapper {
     // --------------------------------------------------------
 
     async _loginPage() {
-        await this.page.waitForTimeout(1500);
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
         const currentUrl =
             this.page.url().toLowerCase();
@@ -510,7 +510,7 @@ export default class LinkedinPageScrapper {
 
                 if (button) {
                     await button.click().catch(() => {});
-                    await this.page.waitForTimeout(300);
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     break;
                 }
             }
