@@ -21,7 +21,6 @@ export default class LinkedinPageScrapper {
         this.isProxyUsed = isProxyUsed;
     }
 
-
     // --------------------------------------------------------
     // Main processing
     // --------------------------------------------------------
@@ -56,9 +55,8 @@ export default class LinkedinPageScrapper {
 
         const profileType = this._detectProfileType(url);
 
-        const profileInfo = await this._getProfileInfo(
-            profileType
-        );
+        const profileInfo =
+            await this._getProfileInfo(profileType);
 
         if (this.config.onlyProfileInfo) {
             return [
@@ -139,7 +137,6 @@ export default class LinkedinPageScrapper {
         });
     }
 
-
     // --------------------------------------------------------
     // Profile type
     // --------------------------------------------------------
@@ -182,7 +179,6 @@ export default class LinkedinPageScrapper {
         return 'unknown';
     }
 
-
     // --------------------------------------------------------
     // Profile information
     // --------------------------------------------------------
@@ -190,239 +186,239 @@ export default class LinkedinPageScrapper {
     async _getProfileInfo(profileType) {
         const url = this.request.url;
 
-        const profileInfo =
-            await this.page.evaluate(
-                (url, isProxyUsed, profileType) => {
-                    const cleanText = value => {
-                        if (!value) {
-                            return undefined;
-                        }
+        return await this.page.evaluate(
+            (url, isProxyUsed, profileType) => {
+                const cleanText = value => {
+                    if (!value) {
+                        return undefined;
+                    }
 
-                        const text =
-                            String(value)
-                                .replace(/\s+/g, ' ')
-                                .trim();
+                    const text =
+                        String(value)
+                            .replace(/\s+/g, ' ')
+                            .trim();
 
-                        return text || undefined;
-                    };
+                    return text || undefined;
+                };
 
+                const getText = selectors => {
+                    for (const selector of selectors) {
+                        const element =
+                            document.querySelector(selector);
 
-                    const getText = selectors => {
-                        for (const selector of selectors) {
-                            const element =
-                                document.querySelector(selector);
+                        if (element) {
+                            const text =
+                                cleanText(
+                                    element.innerText ||
+                                    element.textContent
+                                );
 
-                            if (element) {
-                                const text =
-                                    cleanText(
-                                        element.innerText ||
-                                        element.textContent
-                                    );
-
-                                if (text) {
-                                    return text;
-                                }
+                            if (text) {
+                                return text;
                             }
                         }
+                    }
 
-                        return undefined;
-                    };
+                    return undefined;
+                };
 
+                const getAttribute = (
+                    selectors,
+                    attribute
+                ) => {
+                    for (const selector of selectors) {
+                        const element =
+                            document.querySelector(selector);
 
-                    const getAttribute = (
-                        selectors,
-                        attribute
-                    ) => {
-                        for (const selector of selectors) {
-                            const element =
-                                document.querySelector(selector);
+                        if (element) {
+                            const value =
+                                element.getAttribute(attribute);
 
-                            if (element) {
-                                const value =
-                                    element.getAttribute(attribute);
-
-                                if (value) {
-                                    return value.trim();
-                                }
+                            if (value) {
+                                return value.trim();
                             }
                         }
+                    }
 
-                        return undefined;
-                    };
+                    return undefined;
+                };
 
+                const getFollowersCount = () => {
+                    const bodyText =
+                        document.body?.innerText || '';
 
-                    const getFollowersCount = () => {
-                        const bodyText =
-                            document.body?.innerText || '';
-
-                        const match =
-                            bodyText.match(
-                                /([\d,.]+)\s*(followers|follower)/i
-                            );
-
-                        if (!match) {
-                            return undefined;
-                        }
-
-                        const raw =
-                            match[1]
-                                .replace(/,/g, '')
-                                .replace(/\./g, '');
-
-                        const parsed =
-                            Number.parseInt(raw, 10);
-
-                        return Number.isFinite(parsed)
-                            ? parsed
-                            : undefined;
-                    };
-
-
-                    // ------------------------------------------------
-                    // Profile name
-                    // ------------------------------------------------
-
-                    const profileName =
-                        getText([
-                            'h1',
-                            '.org-top-card-summary__title',
-                            '.org-top-card-summary-info-list__info-item',
-                            '.pv-text-details__left-panel h1',
-                            '.text-heading-xlarge',
-                        ]);
-
-
-                    // ------------------------------------------------
-                    // Profile title / industry / headline
-                    // ------------------------------------------------
-
-                    const profileTitle =
-                        getText([
-                            '.org-top-card-summary__tagline',
-                            '.org-top-card-summary-info-list__info-item',
-                            '.text-body-medium',
-                            '.pv-text-details__left-panel .text-body-medium',
-                        ]);
-
-
-                    // ------------------------------------------------
-                    // Description
-                    // ------------------------------------------------
-
-                    const profileDescription =
-                        getText([
-                            '.org-about-us-organization-description__text',
-                            '.break-words.white-space-pre-wrap',
-                            '.org-about-company-module__description',
-                            '.about-us__description',
-                        ]);
-
-
-                    // ------------------------------------------------
-                    // Company website
-                    // ------------------------------------------------
-
-                    let companyUrl =
-                        getAttribute(
-                            [
-                                'a[data-tracking-control-name*="website"]',
-                                'a[href*="http"]',
-                                '.org-about-company-module__website a',
-                            ],
-                            'href'
+                    const match =
+                        bodyText.match(
+                            /([\d,.]+)\s*(followers|follower)/i
                         );
 
-                    if (
-                        companyUrl &&
-                        companyUrl.startsWith('/')
-                    ) {
-                        companyUrl =
-                            `https://www.linkedin.com${companyUrl}`;
+                    if (!match) {
+                        return undefined;
                     }
 
+                    const raw =
+                        match[1]
+                            .replace(/,/g, '')
+                            .replace(/\./g, '');
 
-                    // ------------------------------------------------
-                    // Company size
-                    // ------------------------------------------------
+                    const parsed =
+                        Number.parseInt(raw, 10);
 
-                    let companySize =
-                        getText([
-                            '.org-about-company-module__company-size-definition-text',
-                            '.org-about-company-module__company-size',
-                        ]);
+                    return Number.isFinite(parsed)
+                        ? parsed
+                        : undefined;
+                };
 
+                const profileName =
+                    getText([
+                        'h1',
+                        '.org-top-card-summary__title',
+                        '.org-top-card-summary-info-list__info-item',
+                        '.pv-text-details__left-panel h1',
+                        '.text-heading-xlarge',
+                    ]);
 
-                    if (!companySize) {
-                        const bodyText =
-                            document.body?.innerText || '';
+                const profileTitle =
+                    getText([
+                        '.org-top-card-summary__tagline',
+                        '.org-top-card-summary-info-list__info-item',
+                        '.text-body-medium',
+                        '.pv-text-details__left-panel .text-body-medium',
+                    ]);
 
-                        const sizeMatch =
-                            bodyText.match(
-                                /(\d[\d,]*\s*-\s*\d[\d,]*\s*employees)/i
-                            );
+                const profileDescription =
+                    getText([
+                        '.org-about-us-organization-description__text',
+                        '.break-words.white-space-pre-wrap',
+                        '.org-about-company-module__description',
+                        '.about-us__description',
+                    ]);
 
-                        if (sizeMatch) {
-                            companySize =
-                                cleanText(sizeMatch[1]);
-                        }
+                let companyUrl =
+                    getAttribute(
+                        [
+                            'a[data-tracking-control-name*="website"]',
+                            'a[href*="http"]',
+                            '.org-about-company-module__website a',
+                        ],
+                        'href'
+                    );
+
+                if (
+                    companyUrl &&
+                    companyUrl.startsWith('/')
+                ) {
+                    companyUrl =
+                        `https://www.linkedin.com${companyUrl}`;
+                }
+
+                let companySize =
+                    getText([
+                        '.org-about-company-module__company-size-definition-text',
+                        '.org-about-company-module__company-size',
+                    ]);
+
+                if (!companySize) {
+                    const bodyText =
+                        document.body?.innerText || '';
+
+                    const sizeMatch =
+                        bodyText.match(
+                            /(\d[\d,]*\s*-\s*\d[\d,]*\s*employees)/i
+                        );
+
+                    if (sizeMatch) {
+                        companySize =
+                            cleanText(sizeMatch[1]);
                     }
+                }
 
+                const followersCount =
+                    getFollowersCount();
 
-                    // ------------------------------------------------
-                    // Followers
-                    // ------------------------------------------------
-
-                    const followersCount =
-                        getFollowersCount();
-
-
-                    return {
-                        profileUrl: url,
-                        profileType,
-
-                        profileName,
-                        profileTitle,
-                        profileDescription,
-
-                        companyUrl,
-                        companySize,
-
-                        followersCount,
-
-                        isProxyUsed,
-                    };
-                },
-
-                url,
-                this.isProxyUsed,
-                profileType
-            );
-
-        return profileInfo;
+                return {
+                    profileUrl: url,
+                    profileType,
+                    profileName,
+                    profileTitle,
+                    profileDescription,
+                    companyUrl,
+                    companySize,
+                    followersCount,
+                    isProxyUsed,
+                };
+            },
+            url,
+            this.isProxyUsed,
+            profileType
+        );
     }
 
-
     // --------------------------------------------------------
-    // Login / authentication detection
+    // Authentication / auth-wall detection
     // --------------------------------------------------------
 
     async _loginPage() {
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Native delay. Puppeteer v25 no longer provides
+        // page.waitForTimeout().
+        await this._sleep(1500);
 
         const currentUrl =
             this.page.url().toLowerCase();
 
-        if (
-            currentUrl.includes('/login') ||
-            currentUrl.includes('/checkpoint') ||
-            currentUrl.includes('/authwall')
-        ) {
+        if (this._isAuthenticationUrl(currentUrl)) {
+            throw new Error(
+                `LinkedIn authentication wall detected: ${currentUrl}`
+            );
+        }
+
+        // LinkedIn can sometimes render an auth wall without
+        // changing the URL. Check the page content as well.
+        const authWallDetected =
+            await this.page.evaluate(() => {
+                const bodyText =
+                    document.body?.innerText?.toLowerCase() || '';
+
+                return (
+                    bodyText.includes('sign in to linkedin') ||
+                    bodyText.includes('join linkedin') ||
+                    bodyText.includes('sign up on linkedin') ||
+                    bodyText.includes('authentication required') ||
+                    bodyText.includes('please sign in')
+                );
+            }).catch(() => false);
+
+        if (authWallDetected) {
             throw new Error(
                 `LinkedIn authentication wall detected: ${currentUrl}`
             );
         }
     }
 
+    _isAuthenticationUrl(url) {
+        if (!url) {
+            return false;
+        }
+
+        const normalizedUrl =
+            url.toLowerCase();
+
+        return (
+            normalizedUrl.includes('/login') ||
+            normalizedUrl.includes('/checkpoint') ||
+            normalizedUrl.includes('/authwall')
+        );
+    }
+
+    // --------------------------------------------------------
+    // Sleep helper
+    // --------------------------------------------------------
+
+    async _sleep(milliseconds) {
+        await new Promise(resolve =>
+            setTimeout(resolve, milliseconds)
+        );
+    }
 
     // --------------------------------------------------------
     // Page not found
@@ -452,7 +448,6 @@ export default class LinkedinPageScrapper {
             return false;
         }
     }
-
 
     // --------------------------------------------------------
     // Delayed images
@@ -490,7 +485,6 @@ export default class LinkedinPageScrapper {
         }
     }
 
-
     // --------------------------------------------------------
     // Close LinkedIn sign-in modal
     // --------------------------------------------------------
@@ -510,7 +504,9 @@ export default class LinkedinPageScrapper {
 
                 if (button) {
                     await button.click().catch(() => {});
-                    await new Promise(resolve => setTimeout(resolve, 300));
+
+                    await this._sleep(300);
+
                     break;
                 }
             }
