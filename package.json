@@ -4,8 +4,8 @@
   "type": "module",
   "description": "Apify Actor for extracting publicly accessible LinkedIn profile information and optional posts.",
   "dependencies": {
-    "apify": "^3.4.0",
-    "crawlee": "^3.5.4",
+    "apify": "^3.7.2",
+    "crawlee": "^3.18.2",
     "puppeteer": "*",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
