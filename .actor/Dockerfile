@@ -4,7 +4,7 @@ WORKDIR /usr/src/app
 
 COPY --chown=myuser package*.json ./
 RUN npm --quiet set progress=false \
-    && npm install --omit=dev --no-audit --no-fund \
+    && npm ci --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
 COPY --chown=myuser . ./
