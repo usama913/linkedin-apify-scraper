@@ -4,19 +4,18 @@ Extract structured information from publicly accessible LinkedIn profile and com
 
 ## Pricing
 
-This Actor uses **Pay Per Event (PPE)** monetization.
+This Actor uses **Pay Per Event (PPE)** monetization. Platform usage and proxies are included.
 
 | Event | Price |
 | --- | --- |
-| `profile-scraped`: one successfully scraped profile/company page | **$0.0054** |
+| `profile`: one successfully scraped profile or company page | **$0.004** |
+| `post`: one post saved to the dataset | **$0.002** |
+| Actor start (once per run, per GB of memory) | **$0.003** |
 
-- **1,000 profiles = $5.40**
-- You are charged only after the profile's results are saved to the dataset.
+- Example: 10 company pages with 10 posts each = 10 × $0.004 + 100 × $0.002 + $0.003 = **$0.243**.
+- With **Only profile info** turned on you pay only the profile event.
 - Failed profiles (page not found, login wall, unreachable) are **not charged**.
-- Posts are included in the profile event. Scraping 1 or 100 posts from a profile is still **one** charge.
-- Use **Maximum profiles** (`maxProfiles`) to cap your spend per run.
-
-Standard Apify platform usage may apply depending on your plan.
+- Use **Maximum profiles** (`maxProfiles`) and **Maximum posts per profile** (`maxItems`) to cap your spend per run.
 
 ## What it extracts
 
