@@ -425,6 +425,19 @@ async function scrapeProfile({
 |--------------------------------------------------------------------------
 */
 
+/*
+ * Pay per event: one 'profile' event per scraped profile or company page,
+ * plus one 'post' event per saved post.
+ */
+async function chargeForResults(results) {
+    await Actor.charge({ eventName: 'profile', count: 1 });
+    const posts = onlyProfileInfo ? 0 : results.filter((item) => item && (item.postId || item.postUrl)).length;
+    if (posts > 0) {
+        await Actor.charge({ eventName: 'post', count: posts });
+    }
+}
+
+
 async function runDirectCrawler() {
 
     const queue =
@@ -492,10 +505,7 @@ async function runDirectCrawler() {
                      * One profile = one billing event.
                      */
 
-                    await Actor.charge({
-                        eventName: 'profile-scraped',
-                        count: 1,
-                    });
+                    await chargeForResults(results);
 
 
                     log.info(
@@ -636,10 +646,7 @@ async function runProxyCrawler(
                      * Dataset insertion.
                      */
 
-                    await Actor.charge({
-                        eventName: 'profile-scraped',
-                        count: 1,
-                    });
+                    await chargeForResults(results);
 
 
                     log.info(
